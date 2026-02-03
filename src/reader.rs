@@ -1,6 +1,8 @@
 //! CLF reader: open .clf, parse header and manifest, expose get_blob(op_id).
 //!
 //! Does not interpret blob contents. Optional signature verification before use.
+//! When building a code section from a list of op_ids, use `build_code_section` with
+//! a `MissingOpIdPolicy`: **Fail** (default) if any op_id is missing, **Skip** to allow partial code.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -14,6 +16,16 @@ use crate::format::{
     ClfHeader, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC,
 };
 
+/// Policy when an op_id required by the model is not present in the CLF.
+/// The packager can choose: fail (strict), skip (partial code), or eventually fall back to another backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingOpIdPolicy {
+    /// If any op_id is missing, return an error. Use when the CLF must fully cover the model.
+    Fail,
+    /// If an op_id is missing, skip it (append nothing). Use for partial code or stubs.
+    Skip,
+}
+
 /// Errors produced by the CLF reader.
 #[derive(Debug, Error)]
 pub enum ClfError {
@@ -23,10 +35,12 @@ pub enum ClfError {
     InvalidMagic,
     #[error("unsupported version: {0} (supported: {1})")]
     UnsupportedVersion(u8, u8),
-    #[error("invalid vendor: UTF-8 error")]
+    #[error("invalid vendor or target: UTF-8 error")]
     InvalidVendorUtf8,
     #[error("signature missing or invalid")]
     SignatureInvalid,
+    #[error("missing op_id {0} in CLF (policy: Fail)")]
+    MissingOpId(u16),
 }
 
 /// CLF reader: parses header and manifest, provides get_blob(op_id).
@@ -75,10 +89,25 @@ impl ClfReader {
         }
         let vendor = String::from_utf8(vendor_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
 
+        // Target length (2 B LE), target (M bytes), blob alignment (1 B).
+        let mut target_len_buf = [0u8; 2];
+        reader.read_exact(&mut target_len_buf)?;
+        let target_len = u16::from_le_bytes(target_len_buf) as usize;
+        let mut target_bytes = vec![0u8; target_len];
+        if target_len > 0 {
+            reader.read_exact(&mut target_bytes)?;
+        }
+        let target = String::from_utf8(target_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
+        let mut blob_align_byte = [0u8; 1];
+        reader.read_exact(&mut blob_align_byte)?;
+        let blob_alignment = blob_align_byte[0];
+
         let header_end = reader.stream_position()?;
         let header = ClfHeader {
             version,
             vendor,
+            target,
+            blob_alignment,
             header_end,
         };
 
@@ -199,5 +228,27 @@ impl ClfReader {
         let mut ids: Vec<u16> = self.manifest.keys().copied().collect();
         ids.sort_unstable();
         ids
+    }
+
+    /// Build the code section by concatenating blobs for the given op_ids in order.
+    /// If an op_id is missing: **Fail** returns `Err(ClfError::MissingOpId(id))`, **Skip** appends nothing for that op.
+    pub fn build_code_section(
+        &mut self,
+        op_ids: &[u16],
+        policy: MissingOpIdPolicy,
+    ) -> Result<Vec<u8>, ClfError> {
+        let mut out = Vec::new();
+        for &op_id in op_ids {
+            match self.get_blob(op_id)? {
+                Some(blob) => out.extend_from_slice(&blob),
+                None => {
+                    if policy == MissingOpIdPolicy::Fail {
+                        return Err(ClfError::MissingOpId(op_id));
+                    }
+                    // Skip: append nothing.
+                }
+            }
+        }
+        Ok(out)
     }
 }

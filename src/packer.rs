@@ -18,6 +18,8 @@ pub enum PackError {
     DuplicateOpId(u16),
     #[error("vendor string too long (max 65535 bytes)")]
     VendorTooLong,
+    #[error("target string too long (max 65535 bytes)")]
+    TargetTooLong,
 }
 
 /// Options for building a .clf file.
@@ -25,6 +27,10 @@ pub enum PackError {
 pub struct PackOptions {
     /// Vendor identifier (UTF-8); display/audit only.
     pub vendor: String,
+    /// Target/architecture (e.g. "CPU", "GPU", "CDNA"); empty = not set. Packager uses this to match CLF to target.
+    pub target: String,
+    /// Blob alignment in bytes (0 = none). Each blob is padded to this alignment in the blob store (e.g. 16 for code).
+    pub blob_alignment: u8,
     /// Format version to write (default CLF_VERSION).
     pub version: u8,
     /// If true, append SIG0 + SHA-256 of everything before the signature.
@@ -35,6 +41,8 @@ impl Default for PackOptions {
     fn default() -> Self {
         Self {
             vendor: String::new(),
+            target: String::new(),
+            blob_alignment: 0,
             version: CLF_VERSION,
             sign: false,
         }
@@ -53,6 +61,10 @@ pub fn pack_clf<W: Write + Seek>(
     if vendor_bytes.len() > u16::MAX as usize {
         return Err(PackError::VendorTooLong);
     }
+    let target_bytes = options.target.as_bytes();
+    if target_bytes.len() > u16::MAX as usize {
+        return Err(PackError::TargetTooLong);
+    }
 
     // Check for duplicate op_ids.
     let mut seen = std::collections::HashSet::new();
@@ -62,29 +74,49 @@ pub fn pack_clf<W: Write + Seek>(
         }
     }
 
+    let align = if options.blob_alignment > 1 {
+        options.blob_alignment as u32
+    } else {
+        1
+    };
+
     // --- Header ---
     out.write_all(&CLF_MAGIC)?;
     out.write_all(&[options.version])?;
     let vendor_len = vendor_bytes.len() as u16;
     out.write_all(&vendor_len.to_le_bytes())?;
     out.write_all(vendor_bytes)?;
+    let target_len = target_bytes.len() as u16;
+    out.write_all(&target_len.to_le_bytes())?;
+    if !target_bytes.is_empty() {
+        out.write_all(target_bytes)?;
+    }
+    out.write_all(&[options.blob_alignment])?;
 
-    // --- Manifest: num_entries (2) + entries (10 each) ---
+    // --- Manifest: num_entries (2) + entries (10 each). Size in manifest = stored size (after padding). ---
     let num_entries = entries.len() as u16;
     out.write_all(&num_entries.to_le_bytes())?;
 
     let mut offset: u32 = 0;
     for (op_id, blob) in entries {
-        let size = blob.len() as u32;
+        let unpadded = blob.len() as u32;
+        let size = (unpadded + align - 1) / align * align; // stored size (padded)
         out.write_all(&op_id.to_le_bytes())?;
         out.write_all(&offset.to_le_bytes())?;
         out.write_all(&size.to_le_bytes())?;
         offset = offset.saturating_add(size);
     }
 
-    // --- Blob store ---
+    // --- Blob store: each blob padded to blob_alignment (or raw if 0). ---
     for (_, blob) in entries {
         out.write_all(blob)?;
+        if options.blob_alignment > 1 {
+            let remainder = blob.len() % (options.blob_alignment as usize);
+            if remainder != 0 {
+                let pad = (options.blob_alignment as usize) - remainder;
+                out.write_all(&vec![0u8; pad])?;
+            }
+        }
     }
 
     let data_len = out.stream_position()?;

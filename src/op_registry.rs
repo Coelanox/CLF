@@ -1,7 +1,8 @@
 //! Canonical op_id registry and mapping from Coelanox OpType (or op name) to op_id.
 //!
-//! Used by the packager to map IR node OpType → op_id when consuming a CLF.
-//! Producers use the same registry (see docs/op_ids.md) when building .clf files.
+//! Single source of truth: see docs/op_ids.md for the full table. Op_ids are stable;
+//! new ops get new ids, old ones are not renumbered. Custom range **256–65535** is for
+//! producer-defined ops (no collision with canonical set).
 
 /// Coelanox OpType: symbolic type for IR nodes. Maps to canonical op_id in CLF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

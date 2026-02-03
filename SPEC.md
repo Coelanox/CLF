@@ -56,17 +56,20 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 
 ### 3.1 Header (fixed + variable)
 
-| Field           | Size   | Type / meaning                                      |
-|-----------------|--------|-----------------------------------------------------|
-| Magic           | 4 B    | `CLF1` (0x43 0x4C 0x46 0x31)                        |
-| Version         | 1 B    | Format version (e.g. 1)                             |
-| Vendor length   | 2 B    | Little-endian u16 (N)                               |
-| Vendor          | N B    | UTF-8 identifier (display/audit only)                |
-| Padding         | 0–7 B  | Optional: align next section to 8 bytes (reserved)   |
+| Field            | Size   | Type / meaning                                      |
+|------------------|--------|-----------------------------------------------------|
+| Magic            | 4 B    | `CLF1` (0x43 0x4C 0x46 0x31)                        |
+| Version          | 1 B    | Format version (1 = this layout)                    |
+| Vendor length    | 2 B    | Little-endian u16 (N)                               |
+| Vendor           | N B    | UTF-8 identifier (display/audit only)               |
+| Target length    | 2 B    | Little-endian u16 (M); 0 = no target                |
+| Target           | M B    | UTF-8 target/architecture (e.g. "CPU", "GPU", "CDNA"). Packager uses this to match CLF to target. |
+| Blob alignment   | 1 B    | Alignment in bytes for blobs in blob store (0 = none). Producer pads each blob to this alignment (e.g. 16 for code). |
 
-- Header size = 4 + 1 + 2 + N (+ padding if alignment is used).
-- **Version** is reserved for future format changes; readers must reject unsupported versions.
-- **Reserved / future:** Extra header bytes may be added later; readers should skip unknown header extension if version allows.
+- Header size = 4 + 1 + 2 + N + 2 + M + 1.
+- **Version policy:** Version 1 = this layout. Readers must reject files with version &gt; supported (e.g. reject version 2 until the reader is updated). No renumbering of existing fields in version 1.
+- **Target:** Optional. If target length is 0, no target bytes follow. Enables the packager to select a CLF by target (e.g. from header) in addition to filename (e.g. `cpu.clf`, `gpu.clf`).
+- **Blob alignment:** 0 = blobs stored back-to-back. If &gt; 0, each blob is padded to a multiple of this value in the blob store; manifest offset/size refer to the stored (padded) layout.
 
 ### 3.2 Manifest
 
@@ -82,24 +85,25 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 ### 3.3 Blob store
 
 - Contiguous byte range immediately after the manifest.
-- For entry `i`: blob starts at `blob_store_start + manifest[i].offset`, length `manifest[i].size`.
-- Blobs are opaque binary (e.g. machine code for one op). Alignment/padding between blobs is optional and defined by the producer.
+- For entry `i`: blob starts at `blob_store_start + manifest[i].offset`, length `manifest[i].size` (stored length; includes padding if blob alignment &gt; 0).
+- Blobs are opaque binary (e.g. machine code for one op). If header blob alignment is &gt; 0, each blob is padded to that alignment; the reader returns the stored bytes (including padding).
 
 ### 3.4 Signature (optional)
 
 - At **end of file**:
   - 4 bytes: signature magic `SIG0` (0x53 0x49 0x47 0x30).
   - 32 bytes: SHA-256 hash of **everything before the signature** (header + manifest + blob store).
-- Used to verify integrity and origin. A reader may require a valid signature before use.
+- **Algorithm:** SHA-256. **Scope:** Whole file minus the 36-byte signature block (4 + 32). No keys or certificates in version 1; verification is “hash matches.” **Verification keys / PKI:** Reserved for future (e.g. v2 could add optional signature scheme with public keys).
+- Used to verify integrity (and optionally origin). A reader may call `verify_signature()` before use and refuse to use the file if verification fails.
 - If present, the total file length is header_size + manifest_size + blob_store_size + 4 + 32.
 
 ---
 
 ## 4. Extension and reserved points
 
-- **Version byte:** Readers must check version; reject if greater than supported.
+- **Version policy:** Version 1 = this layout. Reader rejects unknown version (e.g. version &gt; 1). New formats get a new version; existing fields are not renumbered.
 - **Reserved header bits/bytes:** Future header fields may be added; document in spec revisions.
-- **op_id 0:** Reserved (unknown/custom). op_id 100+ reserved or custom per agreement between producer and consumer.
+- **op_id 0:** Reserved (unknown/custom). **op_id 256–65535:** Custom range for producers; no collision with canonical registry (see op_id registry doc).
 
 ---
 

@@ -12,6 +12,8 @@ use clf::{append_signature, pack_clf, PackOptions};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut vendor = String::new();
+    let mut target = String::new();
+    let mut blob_align: Option<u8> = None;
     let mut output_path: Option<String> = None;
     let mut sign = false;
     let mut entries: Vec<(u16, String)> = Vec::new();
@@ -20,6 +22,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--vendor" => {
                 vendor = args.next().ok_or("--vendor requires a value")?;
+            }
+            "--target" => {
+                target = args.next().ok_or("--target requires a value (e.g. CPU, GPU, CDNA)")?;
+            }
+            "--align" => {
+                let v = args.next().ok_or("--align requires a value (e.g. 16)")?;
+                blob_align = Some(v.parse().map_err(|_| "align must be 0–255")?);
             }
             "--output" | "-o" => {
                 output_path = Some(args.next().ok_or("--output requires a path")?);
@@ -62,6 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let options = PackOptions {
         vendor,
+        target,
+        blob_alignment: blob_align.unwrap_or(0),
         version: clf::CLF_VERSION,
         sign,
     };

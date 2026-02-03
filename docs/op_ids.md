@@ -1,6 +1,10 @@
 # CLF Op ID Registry (canonical)
 
-Coelanox defines a **stable op_id** set so that the packager and any CLF producer agree on meaning. All multi-byte values are little-endian in the file format; this table is the semantic registry.
+This document is the **single source of truth** for op_ids. All producers and the Coelanox Packager must use this registry so that op_id → op meaning is consistent.
+
+- **Stability:** Op_ids are stable. New ops get new ids; old ones may be deprecated but are **not renumbered**.
+- **Custom range:** **256–65535** is reserved for custom ops. Producers can assign op_ids in this range without colliding with the canonical set below. The packager treats them as opaque (e.g. `OpType::Custom(id)`).
+- All multi-byte values are little-endian in the file format; this table is the semantic registry.
 
 | op_id | Name / Coelanox OpType | Category    |
 |-------|------------------------|-------------|
@@ -64,7 +68,8 @@ Coelanox defines a **stable op_id** set so that the packager and any CLF produce
 | 91    | Or                     | Logical     |
 | 92    | Not                    | Logical     |
 | 93–99 | (reserved)             | Logical     |
-| 100+  | Reserved or custom     | —           |
+| 100–255 | Reserved (future canonical) | —        |
+| 256–65535 | **Custom** (producer-defined) | —     |
 
 **Usage:**
 

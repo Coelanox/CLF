@@ -13,6 +13,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let options = PackOptions {
         vendor: "example".to_string(),
+        target: String::new(),
+        blob_alignment: 0,
         version: 1,
         sign: false,
     };
