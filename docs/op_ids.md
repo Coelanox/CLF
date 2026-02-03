@@ -3,7 +3,7 @@
 This document is the **single source of truth** for op_ids. All producers and the Coelanox Packager must use this registry so that op_id → op meaning is consistent.
 
 - **Stability:** Op_ids are stable. New ops get new ids; old ones may be deprecated but are **not renumbered**.
-- **Custom range:** **256–65535** is reserved for custom ops. Producers can assign op_ids in this range without colliding with the canonical set below. The packager treats them as opaque (e.g. `OpType::Custom(id)`).
+- **Custom range:** **256–2³²−1** (u32::MAX) is reserved for custom ops. Producers can assign op_ids in this range without colliding with the canonical set below. The packager treats them as opaque (e.g. `OpType::Custom(id)`).
 - All multi-byte values are little-endian in the file format; this table is the semantic registry.
 
 | op_id | Name / Coelanox OpType | Category    |
@@ -69,7 +69,7 @@ This document is the **single source of truth** for op_ids. All producers and th
 | 92    | Not                    | Logical     |
 | 93–99 | (reserved)             | Logical     |
 | 100–255 | Reserved (future canonical) | —        |
-| 256–65535 | **Custom** (producer-defined) | —     |
+| 256–2³²−1 | **Custom** (producer-defined) | —     |
 
 **Usage:**
 

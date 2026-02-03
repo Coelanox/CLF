@@ -41,7 +41,7 @@ The tool reads each file as a raw blob and writes header + manifest + blob store
 
 ## Op IDs
 
-Use the canonical [op_id registry](op_ids.md). For custom ops, use op_ids in **256–65535** so they do not collide with the canonical set.
+Use the canonical [op_id registry](op_ids.md). For custom ops, use op_ids in **256–2³²−1** (u32::MAX) so they do not collide with the canonical set.
 
 ## Signing (optional)
 

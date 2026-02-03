@@ -7,7 +7,7 @@ use std::io::Cursor;
 use clf::{pack_clf, ClfReader, PackOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let entries: Vec<(u16, Vec<u8>)> = vec![
+    let entries: Vec<(u32, Vec<u8>)> = vec![
         (1, b"blob_for_add".to_vec()),
         (50, b"blob_for_matmul".to_vec()),
     ];

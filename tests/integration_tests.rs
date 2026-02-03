@@ -8,7 +8,7 @@ use clf::{pack_clf, ClfReader, MissingOpIdPolicy, PackOptions};
 /// from op_ids [1, 50] (execution order), assert code section is non-empty and contains both blobs.
 #[test]
 fn packager_clf_backend_produces_non_empty_code() {
-    let entries: Vec<(u16, Vec<u8>)> = vec![
+    let entries: Vec<(u32, Vec<u8>)> = vec![
         (1, b"add_kernel".to_vec()),
         (50, b"matmul_kernel".to_vec()),
     ];
@@ -29,7 +29,7 @@ fn packager_clf_backend_produces_non_empty_code() {
     assert_eq!(reader.header.target, "CPU");
 
     // Simulate packager: execution order op_ids for a tiny "model"
-    let op_ids = [1u16, 50];
+    let op_ids = [1u32, 50];
     let code = reader.build_code_section(&op_ids, MissingOpIdPolicy::Fail).unwrap();
 
     assert!(!code.is_empty(), "code section must be non-empty when CLF has both ops");

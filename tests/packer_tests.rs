@@ -7,7 +7,7 @@ use clf::{append_signature, pack_clf, ClfReader, PackOptions};
 /// Produce a .clf in memory (two blobs), then read it back with ClfReader and verify blobs.
 #[test]
 fn packer_produce_and_read_back() {
-    let entries: Vec<(u16, Vec<u8>)> = vec![
+    let entries: Vec<(u32, Vec<u8>)> = vec![
         (1, vec![0x01, 0x02, 0x03]),
         (50, vec![0x50, 0x51, 0x52, 0x53]),
     ];
@@ -41,7 +41,7 @@ fn packer_produce_and_read_back() {
 /// Produce a signed .clf and verify signature when reading.
 #[test]
 fn packer_signed_and_verify() {
-    let entries: Vec<(u16, Vec<u8>)> = vec![(10, b"relu_kernel".to_vec())];
+    let entries: Vec<(u32, Vec<u8>)> = vec![(10, b"relu_kernel".to_vec())];
     let options = PackOptions {
         vendor: String::new(),
         target: String::new(),
@@ -66,7 +66,7 @@ fn packer_signed_and_verify() {
 /// Produce .clf with blob alignment 16; reader returns stored (padded) blob.
 #[test]
 fn packer_blob_alignment() {
-    let entries: Vec<(u16, Vec<u8>)> = vec![(1, vec![0x01, 0x02])]; // 2 bytes
+    let entries: Vec<(u32, Vec<u8>)> = vec![(1, vec![0x01, 0x02])]; // 2 bytes
     let options = PackOptions {
         vendor: String::new(),
         target: String::new(),

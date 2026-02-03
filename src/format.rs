@@ -44,7 +44,7 @@ pub struct ClfHeader {
 #[derive(Debug, Clone, Copy)]
 pub struct ManifestEntry {
     /// Canonical op identifier (see op_registry / docs/op_ids.md).
-    pub op_id: u16,
+    pub op_id: u32,
     /// Offset from start of blob store, in bytes.
     pub offset: u32,
     /// Blob length in bytes.
@@ -52,6 +52,6 @@ pub struct ManifestEntry {
 }
 
 impl ManifestEntry {
-    /// Size of one manifest entry in the file: op_id (2) + offset (4) + size (4).
-    pub const ENTRY_SIZE: usize = 2 + 4 + 4;
+    /// Size of one manifest entry in the file: op_id (4) + offset (4) + size (4).
+    pub const ENTRY_SIZE: usize = 4 + 4 + 4;
 }

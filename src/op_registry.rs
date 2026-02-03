@@ -1,7 +1,7 @@
 //! Canonical op_id registry and mapping from Coelanox OpType (or op name) to op_id.
 //!
 //! Single source of truth: see docs/op_ids.md for the full table. Op_ids are stable;
-//! new ops get new ids, old ones are not renumbered. Custom range **256–65535** is for
+//! new ops get new ids, old ones are not renumbered. Custom range **256–u32::MAX** is for
 //! producer-defined ops (no collision with canonical set).
 
 /// Coelanox OpType: symbolic type for IR nodes. Maps to canonical op_id in CLF.
@@ -68,14 +68,14 @@ pub enum OpType {
     And,
     Or,
     Not,
-    /// Custom or reserved; op_id 0 or 100+ per agreement.
-    Custom(u16),
+    /// Custom or reserved; op_id 0 or 256+ per agreement.
+    Custom(u32),
 }
 
-/// Maps Coelanox OpType to canonical CLF op_id (u16).
+/// Maps Coelanox OpType to canonical CLF op_id (u32).
 /// Used by the packager when generating code from a CLF backend.
 #[must_use]
-pub fn op_type_to_clf_id(op_type: OpType) -> u16 {
+pub fn op_type_to_clf_id(op_type: OpType) -> u32 {
     match op_type {
         OpType::Unknown | OpType::Custom(0) => 0,
         OpType::Custom(id) => id,
@@ -133,7 +133,7 @@ pub fn op_type_to_clf_id(op_type: OpType) -> u16 {
 
 /// Reverse map: op_id → OpType (for tooling / diagnostics). Unknown op_ids map to Custom(id).
 #[must_use]
-pub fn clf_id_to_op_type(op_id: u16) -> OpType {
+pub fn clf_id_to_op_type(op_id: u32) -> OpType {
     match op_id {
         0 => OpType::Unknown,
         1 => OpType::Add,

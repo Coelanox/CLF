@@ -15,10 +15,10 @@ pub enum PackError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("duplicate op_id: {0}")]
-    DuplicateOpId(u16),
-    #[error("vendor string too long (max 65535 bytes)")]
+    DuplicateOpId(u32),
+    #[error("vendor string too long (max u32::MAX bytes)")]
     VendorTooLong,
-    #[error("target string too long (max 65535 bytes)")]
+    #[error("target string too long (max u32::MAX bytes)")]
     TargetTooLong,
 }
 
@@ -54,15 +54,15 @@ impl Default for PackOptions {
 /// (caller may then call `append_signature` if options.sign is true).
 pub fn pack_clf<W: Write + Seek>(
     out: &mut W,
-    entries: &[(u16, Vec<u8>)],
+    entries: &[(u32, Vec<u8>)],
     options: &PackOptions,
 ) -> Result<u64, PackError> {
     let vendor_bytes = options.vendor.as_bytes();
-    if vendor_bytes.len() > u16::MAX as usize {
+    if vendor_bytes.len() > u32::MAX as usize {
         return Err(PackError::VendorTooLong);
     }
     let target_bytes = options.target.as_bytes();
-    if target_bytes.len() > u16::MAX as usize {
+    if target_bytes.len() > u32::MAX as usize {
         return Err(PackError::TargetTooLong);
     }
 
@@ -83,18 +83,18 @@ pub fn pack_clf<W: Write + Seek>(
     // --- Header ---
     out.write_all(&CLF_MAGIC)?;
     out.write_all(&[options.version])?;
-    let vendor_len = vendor_bytes.len() as u16;
+    let vendor_len = vendor_bytes.len() as u32;
     out.write_all(&vendor_len.to_le_bytes())?;
     out.write_all(vendor_bytes)?;
-    let target_len = target_bytes.len() as u16;
+    let target_len = target_bytes.len() as u32;
     out.write_all(&target_len.to_le_bytes())?;
     if !target_bytes.is_empty() {
         out.write_all(target_bytes)?;
     }
     out.write_all(&[options.blob_alignment])?;
 
-    // --- Manifest: num_entries (2) + entries (10 each). Size in manifest = stored size (after padding). ---
-    let num_entries = entries.len() as u16;
+    // --- Manifest: num_entries (4 B) + entries (12 B each). Size in manifest = stored size (after padding). ---
+    let num_entries = entries.len() as u32;
     out.write_all(&num_entries.to_le_bytes())?;
 
     let mut offset: u32 = 0;

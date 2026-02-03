@@ -19,6 +19,6 @@ CLF is the standard binary format for shipping pre-compiled hardware kernels in 
 
 - **Reader** (Rust): `ClfReader::open(path)`, `get_blob(op_id)`, `build_code_section(op_ids, MissingOpIdPolicy)` (Fail or Skip when op_id missing), optional `verify_signature()` before use. Header includes `target` and `blob_alignment` for packager matching and layout.
 - **Packer** (Rust): `coelanox-packer` CLI (`--target`, `--align`, `--sign`) and `pack_clf` / `append_signature` library API. Open source so producers can audit it.
-- **Op ID registry**: `op_type_to_clf_id(OpType)`, `clf_id_to_op_type(op_id)` and canonical op_id list in code and docs/op_ids.md (custom range 256–65535).
+- **Op ID registry**: `op_type_to_clf_id(OpType)`, `clf_id_to_op_type(op_id)` and canonical op_id list in code and docs/op_ids.md (custom range 256–u32::MAX).
 
 Build: `cargo build`. Tests: `cargo test`. Pack a .clf: `cargo run --bin coelanox-packer -- --output out.clf 1:blob1.bin 50:blob50.bin`.

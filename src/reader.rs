@@ -40,7 +40,7 @@ pub enum ClfError {
     #[error("signature missing or invalid")]
     SignatureInvalid,
     #[error("missing op_id {0} in CLF (policy: Fail)")]
-    MissingOpId(u16),
+    MissingOpId(u32),
 }
 
 /// CLF reader: parses header and manifest, provides get_blob(op_id).
@@ -48,7 +48,7 @@ pub struct ClfReader {
     /// Parsed header (vendor, version).
     pub header: ClfHeader,
     /// Manifest: op_id → (offset, size) relative to blob store start.
-    manifest: HashMap<u16, ManifestEntry>,
+    manifest: HashMap<u32, ManifestEntry>,
     /// File handle; blob store starts at blob_store_offset.
     reader: BufReader<File>,
     /// Byte offset in file where blob store starts.
@@ -79,9 +79,9 @@ impl ClfReader {
             return Err(ClfError::UnsupportedVersion(version, CLF_VERSION));
         }
 
-        let mut vendor_len_buf = [0u8; 2];
+        let mut vendor_len_buf = [0u8; 4];
         reader.read_exact(&mut vendor_len_buf)?;
-        let vendor_len = u16::from_le_bytes(vendor_len_buf) as usize;
+        let vendor_len = u32::from_le_bytes(vendor_len_buf) as usize;
 
         let mut vendor_bytes = vec![0u8; vendor_len];
         if vendor_len > 0 {
@@ -89,10 +89,10 @@ impl ClfReader {
         }
         let vendor = String::from_utf8(vendor_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
 
-        // Target length (2 B LE), target (M bytes), blob alignment (1 B).
-        let mut target_len_buf = [0u8; 2];
+        // Target length (4 B LE), target (M bytes), blob alignment (1 B).
+        let mut target_len_buf = [0u8; 4];
         reader.read_exact(&mut target_len_buf)?;
-        let target_len = u16::from_le_bytes(target_len_buf) as usize;
+        let target_len = u32::from_le_bytes(target_len_buf) as usize;
         let mut target_bytes = vec![0u8; target_len];
         if target_len > 0 {
             reader.read_exact(&mut target_bytes)?;
@@ -112,17 +112,17 @@ impl ClfReader {
         };
 
         // --- Manifest ---
-        let mut num_entries_buf = [0u8; 2];
+        let mut num_entries_buf = [0u8; 4];
         reader.read_exact(&mut num_entries_buf)?;
-        let num_entries = u16::from_le_bytes(num_entries_buf) as usize;
+        let num_entries = u32::from_le_bytes(num_entries_buf) as usize;
 
         let mut manifest = HashMap::with_capacity(num_entries);
         for _ in 0..num_entries {
             let mut entry_buf = [0u8; ManifestEntry::ENTRY_SIZE];
             reader.read_exact(&mut entry_buf)?;
-            let op_id = u16::from_le_bytes(entry_buf[0..2].try_into().unwrap());
-            let offset = u32::from_le_bytes(entry_buf[2..6].try_into().unwrap());
-            let size = u32::from_le_bytes(entry_buf[6..10].try_into().unwrap());
+            let op_id = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
+            let offset = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
+            let size = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
             let entry = ManifestEntry { op_id, offset, size };
             manifest.insert(op_id, entry);
         }
@@ -157,7 +157,7 @@ impl ClfReader {
     }
 
     /// Return the blob for the given op_id if present. No interpretation of blob contents.
-    pub fn get_blob(&mut self, op_id: u16) -> Result<Option<Vec<u8>>, ClfError> {
+    pub fn get_blob(&mut self, op_id: u32) -> Result<Option<Vec<u8>>, ClfError> {
         let entry = match self.manifest.get(&op_id) {
             Some(e) => e,
             None => return Ok(None),
@@ -224,8 +224,8 @@ impl ClfReader {
 
     /// List all op_ids present in the manifest.
     #[must_use]
-    pub fn op_ids(&self) -> Vec<u16> {
-        let mut ids: Vec<u16> = self.manifest.keys().copied().collect();
+    pub fn op_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.manifest.keys().copied().collect();
         ids.sort_unstable();
         ids
     }
@@ -234,7 +234,7 @@ impl ClfReader {
     /// If an op_id is missing: **Fail** returns `Err(ClfError::MissingOpId(id))`, **Skip** appends nothing for that op.
     pub fn build_code_section(
         &mut self,
-        op_ids: &[u16],
+        op_ids: &[u32],
         policy: MissingOpIdPolicy,
     ) -> Result<Vec<u8>, ClfError> {
         let mut out = Vec::new();

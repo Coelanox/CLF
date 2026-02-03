@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut blob_align: Option<u8> = None;
     let mut output_path: Option<String> = None;
     let mut sign = false;
-    let mut entries: Vec<(u16, String)> = Vec::new();
+    let mut entries: Vec<(u32, String)> = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if part.len() != 2 {
                     return Err(format!("expected op_id:path, got: {}", arg).into());
                 }
-                let op_id: u16 = part[0].parse().map_err(|_| "op_id must be u16")?;
+                let op_id: u32 = part[0].parse().map_err(|_| "op_id must be u32")?;
                 entries.push((op_id, part[1].to_string()));
             }
         }
@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load blobs from paths (raw binary; no symbol stripping in this minimal tool).
-    let blobs: Vec<(u16, Vec<u8>)> = entries
+    let blobs: Vec<(u32, Vec<u8>)> = entries
         .into_iter()
         .map(|(op_id, path)| {
             let mut f = File::open(&path)
