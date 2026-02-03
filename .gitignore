@@ -12,6 +12,9 @@ build/
 *.egg-info/
 .out/
 cache/
+target/
+Cargo.lock
+*.clf
 
 # IDE / OS
 .idea/

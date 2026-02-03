@@ -1,0 +1,24 @@
+[package]
+name = "clf"
+version = "0.1.0"
+edition = "2021"
+description = "CLF (Coelanox Library File) — reader and packer for pre-compiled hardware kernel archives"
+license = "MIT"
+repository = ""
+readme = "README.md"
+
+[lib]
+name = "clf"
+path = "src/lib.rs"
+
+[[bin]]
+name = "coelanox-packer"
+path = "src/bin/coelanox-packer.rs"
+
+[dependencies]
+thiserror = "1.0"
+sha2 = "0.10"
+tempfile = "3"
+
+[dev-dependencies]
+tempfile = "3"
