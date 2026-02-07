@@ -13,7 +13,7 @@ pub mod op_registry;
 pub mod packer;
 pub mod reader;
 
-pub use format::{ClfHeader, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC};
+pub use format::{ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC};
 pub use op_registry::{clf_id_to_op_type, op_type_to_clf_id, OpType};
 pub use packer::{append_signature, pack_clf, PackError, PackOptions};
 pub use reader::{ClfError, ClfReader, MissingOpIdPolicy};

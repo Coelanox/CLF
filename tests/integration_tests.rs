@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use clf::{pack_clf, ClfReader, MissingOpIdPolicy, PackOptions};
+use clf::{pack_clf, ClfKind, ClfReader, MissingOpIdPolicy, PackOptions};
 
 /// Drop a minimal .clf (target CPU, two blobs) in a temp path, open with reader, build code section
 /// from op_ids [1, 50] (execution order), assert code section is non-empty and contains both blobs.
@@ -16,6 +16,7 @@ fn packager_clf_backend_produces_non_empty_code() {
         vendor: "integration-test".to_string(),
         target: "CPU".to_string(),
         blob_alignment: 0,
+        kind: ClfKind::Compute,
         version: 1,
         sign: false,
     };

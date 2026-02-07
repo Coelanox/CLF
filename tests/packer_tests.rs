@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 
-use clf::{append_signature, pack_clf, ClfReader, PackOptions};
+use clf::{append_signature, pack_clf, ClfKind, ClfReader, PackOptions};
 
 /// Produce a .clf in memory (two blobs), then read it back with ClfReader and verify blobs.
 #[test]
@@ -15,6 +15,7 @@ fn packer_produce_and_read_back() {
         vendor: "packer-test".to_string(),
         target: String::new(),
         blob_alignment: 0,
+        kind: ClfKind::Compute,
         version: 1,
         sign: false,
     };
@@ -46,6 +47,7 @@ fn packer_signed_and_verify() {
         vendor: String::new(),
         target: String::new(),
         blob_alignment: 0,
+        kind: ClfKind::Compute,
         version: 1,
         sign: true,
     };
@@ -63,6 +65,31 @@ fn packer_signed_and_verify() {
     assert!(reader.signature_verified());
 }
 
+/// Produce .clf with kind MemoryMovement (v2); reader parses kind.
+#[test]
+fn packer_kind_memory_movement() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(1, b"blob".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::MemoryMovement,
+        version: 2,
+        sign: false,
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    pack_clf(&mut buf, &entries, &options).unwrap();
+    let bytes = buf.into_inner();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let reader = ClfReader::open(file.path()).unwrap();
+    assert_eq!(reader.header.kind, ClfKind::MemoryMovement);
+    assert_eq!(reader.header.kind.extension(), "clfmm");
+}
+
 /// Produce .clf with blob alignment 16; reader returns stored (padded) blob.
 #[test]
 fn packer_blob_alignment() {
@@ -71,6 +98,7 @@ fn packer_blob_alignment() {
         vendor: String::new(),
         target: String::new(),
         blob_alignment: 16,
+        kind: ClfKind::Compute,
         version: 1,
         sign: false,
     };

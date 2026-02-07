@@ -7,13 +7,14 @@
 use std::fs::File;
 use std::io::Read;
 
-use clf::{append_signature, pack_clf, PackOptions};
+use clf::{append_signature, pack_clf, ClfKind, PackOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut vendor = String::new();
     let mut target = String::new();
     let mut blob_align: Option<u8> = None;
+    let mut kind = ClfKind::Compute;
     let mut output_path: Option<String> = None;
     let mut sign = false;
     let mut entries: Vec<(u32, String)> = Vec::new();
@@ -25,6 +26,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--target" => {
                 target = args.next().ok_or("--target requires a value (e.g. CPU, GPU, CDNA)")?;
+            }
+            "--kind" => {
+                let v = args.next().ok_or("--kind requires compute|memory-movement|memory-protection")?;
+                kind = match v.to_lowercase().as_str() {
+                    "compute" | "c" => ClfKind::Compute,
+                    "memory-movement" | "memorymovement" | "mm" => ClfKind::MemoryMovement,
+                    "memory-protection" | "memoryprotection" | "mp" => ClfKind::MemoryProtection,
+                    _ => return Err(format!("--kind must be compute|memory-movement|memory-protection, got: {}", v).into()),
+                };
             }
             "--align" => {
                 let v = args.next().ok_or("--align requires a value (e.g. 16)")?;
@@ -73,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vendor,
         target,
         blob_alignment: blob_align.unwrap_or(0),
+        kind,
         version: clf::CLF_VERSION,
         sign,
     };

@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 
-use clf::{pack_clf, ClfReader, MissingOpIdPolicy, PackOptions};
+use clf::{pack_clf, ClfKind, ClfReader, MissingOpIdPolicy, PackOptions};
 
 /// Build a minimal .clf in memory (op_id 1 and 50, fake blobs), then open with ClfReader and get_blob.
 #[test]
@@ -15,6 +15,7 @@ fn reader_parse_minimal_and_get_blob() {
         vendor: "test-vendor".to_string(),
         target: String::new(),
         blob_alignment: 0,
+        kind: ClfKind::Compute,
         version: 1,
         sign: false,
     };
@@ -101,6 +102,106 @@ fn reader_build_code_section_fail_on_missing() {
         .build_code_section(&op_ids, MissingOpIdPolicy::Fail)
         .unwrap_err();
     assert!(err.to_string().contains("99") || err.to_string().contains("missing"));
+}
+
+/// v2 file with kind MemoryMovement: parse and expose kind.
+#[test]
+fn reader_parse_kind_v2() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(1, b"blob".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::MemoryMovement,
+        version: 2,
+        sign: false,
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    pack_clf(&mut buf, &entries, &options).unwrap();
+    let bytes = buf.into_inner();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let reader = ClfReader::open(file.path()).unwrap();
+    assert_eq!(reader.header.version, 2);
+    assert_eq!(reader.header.kind, ClfKind::MemoryMovement);
+}
+
+/// open_with_expected_kind: reject when kind mismatch.
+#[test]
+fn reader_expected_kind_mismatch() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(1, b"blob".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::Compute,
+        version: 2,
+        sign: false,
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    pack_clf(&mut buf, &entries, &options).unwrap();
+    let bytes = buf.into_inner();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let err = ClfReader::open_with_expected_kind(file.path(), Some(ClfKind::MemoryMovement))
+        .unwrap_err();
+    assert!(err.to_string().contains("mismatch") || err.to_string().contains("Kind"));
+}
+
+/// open_with_expected_kind: succeed when kind matches.
+#[test]
+fn reader_expected_kind_matches() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(1, b"blob".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::MemoryProtection,
+        version: 2,
+        sign: false,
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    pack_clf(&mut buf, &entries, &options).unwrap();
+    let bytes = buf.into_inner();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let reader = ClfReader::open_with_expected_kind(file.path(), Some(ClfKind::MemoryProtection))
+        .unwrap();
+    assert_eq!(reader.header.kind, ClfKind::MemoryProtection);
+}
+
+/// v1 file: kind defaults to Compute.
+#[test]
+fn reader_v1_kind_defaults_to_compute() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(1, b"blob".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::Compute,
+        version: 1,
+        sign: false,
+    };
+
+    let mut buf = Cursor::new(Vec::new());
+    pack_clf(&mut buf, &entries, &options).unwrap();
+    let bytes = buf.into_inner();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let reader = ClfReader::open(file.path()).unwrap();
+    assert_eq!(reader.header.version, 1);
+    assert_eq!(reader.header.kind, ClfKind::Compute);
 }
 
 /// build_code_section with Skip policy: missing op_id skips, result non-empty.

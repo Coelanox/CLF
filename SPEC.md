@@ -59,17 +59,29 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 | Field            | Size   | Type / meaning                                      |
 |------------------|--------|-----------------------------------------------------|
 | Magic            | 4 B    | `CLF1` (0x43 0x4C 0x46 0x31)                        |
-| Version          | 1 B    | Format version (1 = this layout)                    |
+| Version          | 1 B    | Format version (1 = legacy, 2 = with kind)         |
 | Vendor length    | 4 B    | Little-endian u32 (N)                               |
 | Vendor           | N B    | UTF-8 identifier (display/audit only)               |
 | Target length    | 4 B    | Little-endian u32 (M); 0 = no target                |
 | Target           | M B    | UTF-8 target/architecture (e.g. "CPU", "GPU", "CDNA"). Packager uses this to match CLF to target. |
 | Blob alignment   | 1 B    | Alignment in bytes for blobs in blob store (0 = none). Producer pads each blob to this alignment (e.g. 16 for code). |
+| Kind             | 1 B    | *(v2 only)* File kind: 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection. Source of truth for the file's role. |
 
-- Header size = 4 + 1 + 4 + N + 4 + M + 1.
-- **Version policy:** Version 1 = this layout. Readers must reject files with version &gt; supported (e.g. reject version 2 until the reader is updated). No renumbering of existing fields in version 1.
+- **Header size:** Version 1: 4 + 1 + 4 + N + 4 + M + 1 bytes. Version 2: + 1 byte (kind) = 4 + 1 + 4 + N + 4 + M + 1 + 1 bytes.
+- **Version policy:** Version 1 = layout without kind. Version 2 = layout with kind. Readers must reject version &gt; supported. No renumbering of existing fields.
+- **Kind (v2):** 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection. For v1 files, kind is absent and defaults to Compute (backwards compatibility).
+- **Validate on open:** Consumers may validate that the header kind matches the expected kind (e.g. when opening a `.clfmm` file, expect MemoryMovement); reject if mismatch.
 - **Target:** Optional. If target length is 0, no target bytes follow. Enables the packager to select a CLF by target (e.g. from header) in addition to filename (e.g. `cpu.clf`, `gpu.clf`).
 - **Blob alignment:** 0 = blobs stored back-to-back. If &gt; 0, each blob is padded to a multiple of this value in the blob store; manifest offset/size refer to the stored (padded) layout.
+
+### 3.1.1 File extensions (discovery and routing)
+
+| Extension | Meaning                                      | Kind (when absent, treat as Compute) |
+|-----------|----------------------------------------------|--------------------------------------|
+| `.clfc`   | Coelanox Library File Compute                | Compute                              |
+| `.clfmm`  | Coelanox Library File Memory Movement        | MemoryMovement                       |
+| `.clfmp`  | Coelanox Library File Memory Protection      | MemoryProtection                     |
+| `.clf`    | Legacy; compute-only                         | Compute (backwards compatibility)   |
 
 ### 3.2 Manifest
 
@@ -78,12 +90,14 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 | Num entries  | 4 B    | Little-endian u32                                   |
 | Entries      | 12 B each | For each: **op_id** (4 B LE), **offset** (4 B LE), **size** (4 B LE) |
 
+- **Manifest size:** 4 + num_entries × 12 bytes (num_entries field + all entries).
 - **Offset** and **size** are relative to the **start of the blob store** (first byte after the manifest).
 - No duplicate op_ids; op_id is the key.
 - Entries may appear in any order; lookup is by op_id.
 
 ### 3.3 Blob store
 
+- **Blob store start:** Byte offset from file start = header size + manifest size. v1: `4 + 1 + 4 + vendor_len + 4 + target_len + 1 + 4 + (num_entries × 12)`. v2: + 1 (kind) = `4 + 1 + 4 + vendor_len + 4 + target_len + 1 + 1 + 4 + (num_entries × 12)`.
 - Contiguous byte range immediately after the manifest.
 - For entry `i`: blob starts at `blob_store_start + manifest[i].offset`, length `manifest[i].size` (stored length; includes padding if blob alignment &gt; 0).
 - Blobs are opaque binary (e.g. machine code for one op). If header blob alignment is &gt; 0, each blob is padded to that alignment; the reader returns the stored bytes (including padding).
@@ -101,7 +115,7 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 
 ## 4. Limits and future-proofing
 
-### 4.1 Current limits (version 1)
+### 4.1 Current limits (version 1 & 2)
 
 | What | Type / limit | Practical impact |
 |------|----------------|------------------|
@@ -111,6 +125,7 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 | **Blob offset / size** | u32 each | Max ~4 GiB per blob; blob store can be very large. Sufficient for any single kernel. |
 | **Format version** | u8 | 256 versions; new layout = new version. |
 | **Blob alignment** | u8 (0–255) | Alignment in bytes; 16–64 covers all common ISAs. |
+| **Kind** | u8 (v2) | 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection. |
 
 ### 4.2 Future-proofing
 
@@ -127,7 +142,7 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 
 ## 5. Extension and reserved points (summary)
 
-- **Version policy:** Version 1 = this layout. Reader rejects unknown version (e.g. version &gt; 1). New formats get a new version; existing fields are not renumbered.
+- **Version policy:** Version 1 = layout without kind (defaults to Compute). Version 2 = layout with kind. Reader rejects unknown version (e.g. version &gt; 2). New formats get a new version; existing fields are not renumbered.
 - **Reserved header bits/bytes:** Future header fields may be added; document in spec revisions.
 - **op_id 0:** Reserved (unknown/custom). **op_id 256–u32::MAX:** Custom range for producers; no collision with canonical registry (see op_id registry doc).
 

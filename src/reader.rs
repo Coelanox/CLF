@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::format::{
-    ClfHeader, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC,
+    ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC,
 };
 
 /// Policy when an op_id required by the model is not present in the CLF.
@@ -41,9 +41,12 @@ pub enum ClfError {
     SignatureInvalid,
     #[error("missing op_id {0} in CLF (policy: Fail)")]
     MissingOpId(u32),
+    #[error("CLF kind mismatch: expected {expected:?}, got {actual:?}")]
+    KindMismatch { expected: ClfKind, actual: ClfKind },
 }
 
 /// CLF reader: parses header and manifest, provides get_blob(op_id).
+#[derive(Debug)]
 pub struct ClfReader {
     /// Parsed header (vendor, version).
     pub header: ClfHeader,
@@ -61,7 +64,18 @@ pub struct ClfReader {
 
 impl ClfReader {
     /// Open a .clf file and parse header + manifest. Does not verify signature.
+    /// For kind validation, use `open_with_expected_kind`.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, ClfError> {
+        Self::open_with_expected_kind(path, None)
+    }
+
+    /// Open a .clf file and parse header + manifest. When `expected_kind` is `Some(k)`,
+    /// rejects the file if the header kind does not match (e.g. opening a .clfmm when
+    /// expecting MemoryMovement).
+    pub fn open_with_expected_kind<P: AsRef<Path>>(
+        path: P,
+        expected_kind: Option<ClfKind>,
+    ) -> Result<Self, ClfError> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
 
@@ -102,14 +116,33 @@ impl ClfReader {
         reader.read_exact(&mut blob_align_byte)?;
         let blob_alignment = blob_align_byte[0];
 
+        // v2: read kind byte; v1: default to Compute (backwards compatibility).
+        let kind = if version >= 2 {
+            let mut kind_byte = [0u8; 1];
+            reader.read_exact(&mut kind_byte)?;
+            ClfKind::from_byte(kind_byte[0])
+        } else {
+            ClfKind::default_for_v1()
+        };
+
         let header_end = reader.stream_position()?;
         let header = ClfHeader {
             version,
             vendor,
             target,
             blob_alignment,
+            kind,
             header_end,
         };
+
+        if let Some(expected) = expected_kind {
+            if header.kind != expected {
+                return Err(ClfError::KindMismatch {
+                    expected,
+                    actual: header.kind,
+                });
+            }
+        }
 
         // --- Manifest ---
         let mut num_entries_buf = [0u8; 4];

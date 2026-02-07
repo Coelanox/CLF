@@ -7,7 +7,7 @@ use std::io::{Read, Seek, Write};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::format::{CLF_MAGIC, CLF_VERSION, SIG_MAGIC};
+use crate::format::{ClfKind, CLF_MAGIC, CLF_VERSION, SIG_MAGIC};
 
 /// Errors produced by the packer.
 #[derive(Debug, Error)]
@@ -31,7 +31,9 @@ pub struct PackOptions {
     pub target: String,
     /// Blob alignment in bytes (0 = none). Each blob is padded to this alignment in the blob store (e.g. 16 for code).
     pub blob_alignment: u8,
-    /// Format version to write (default CLF_VERSION).
+    /// File kind (Compute / MemoryMovement / MemoryProtection). Written to header (v2 format).
+    pub kind: ClfKind,
+    /// Format version to write (default CLF_VERSION; packer writes v2 when kind is used).
     pub version: u8,
     /// If true, append SIG0 + SHA-256 of everything before the signature.
     pub sign: bool,
@@ -43,6 +45,7 @@ impl Default for PackOptions {
             vendor: String::new(),
             target: String::new(),
             blob_alignment: 0,
+            kind: ClfKind::Compute,
             version: CLF_VERSION,
             sign: false,
         }
@@ -92,6 +95,10 @@ pub fn pack_clf<W: Write + Seek>(
         out.write_all(target_bytes)?;
     }
     out.write_all(&[options.blob_alignment])?;
+    // v2: kind byte (0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection). v1: omitted.
+    if options.version >= 2 {
+        out.write_all(&[options.kind as u8])?;
+    }
 
     // --- Manifest: num_entries (4 B) + entries (12 B each). Size in manifest = stored size (after padding). ---
     let num_entries = entries.len() as u32;

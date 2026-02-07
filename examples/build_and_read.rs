@@ -4,7 +4,7 @@
 
 use std::io::Cursor;
 
-use clf::{pack_clf, ClfReader, PackOptions};
+use clf::{pack_clf, ClfKind, ClfReader, PackOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let entries: Vec<(u32, Vec<u8>)> = vec![
@@ -15,7 +15,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vendor: "example".to_string(),
         target: String::new(),
         blob_alignment: 0,
-        version: 1,
+        kind: ClfKind::Compute,
+        version: clf::CLF_VERSION,
         sign: false,
     };
 
