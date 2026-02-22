@@ -107,11 +107,11 @@ pub fn pack_clf<W: Write + Seek>(
     let mut offset: u32 = 0;
     for (op_id, blob) in entries {
         let unpadded = blob.len() as u32;
-        let size = (unpadded + align - 1) / align * align; // stored size (padded)
+        let padded_size = (unpadded + align - 1) / align * align;
         out.write_all(&op_id.to_le_bytes())?;
         out.write_all(&offset.to_le_bytes())?;
-        out.write_all(&size.to_le_bytes())?;
-        offset = offset.saturating_add(size);
+        out.write_all(&unpadded.to_le_bytes())?; // reader gets exact blob; offset advance uses padded_size
+        offset = offset.saturating_add(padded_size);
     }
 
     // --- Blob store: each blob padded to blob_alignment (or raw if 0). ---

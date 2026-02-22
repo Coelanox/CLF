@@ -6,14 +6,14 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::format::{
-    ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_MAGIC,
+    ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_HASH_LEN, SIG_MAGIC,
 };
 
 /// Policy when an op_id required by the model is not present in the CLF.
@@ -283,5 +283,112 @@ impl ClfReader {
             }
         }
         Ok(out)
+    }
+}
+
+/// CLF reader that reads from bytes (e.g. container-embedded CLFMM).
+#[derive(Debug)]
+pub struct ClfReaderFromBytes {
+    pub header: ClfHeader,
+    manifest: HashMap<u32, ManifestEntry>,
+    data: Vec<u8>,
+    blob_store_offset: u64,
+    blob_store_len: u64,
+}
+
+impl ClfReaderFromBytes {
+    /// Open CLF from bytes. When `expected_kind` is `Some(k)`, rejects if header kind does not match.
+    pub fn open(data: &[u8], expected_kind: Option<ClfKind>) -> Result<Self, ClfError> {
+        let mut cursor = Cursor::new(data);
+        let mut magic = [0u8; 4];
+        cursor.read_exact(&mut magic)?;
+        if magic != CLF_MAGIC {
+            return Err(ClfError::InvalidMagic);
+        }
+        let mut version_byte = [0u8; 1];
+        cursor.read_exact(&mut version_byte)?;
+        let version = version_byte[0];
+        if version > CLF_VERSION {
+            return Err(ClfError::UnsupportedVersion(version, CLF_VERSION));
+        }
+        let mut vendor_len_buf = [0u8; 4];
+        cursor.read_exact(&mut vendor_len_buf)?;
+        let vendor_len = u32::from_le_bytes(vendor_len_buf) as usize;
+        let mut vendor_bytes = vec![0u8; vendor_len];
+        if vendor_len > 0 {
+            cursor.read_exact(&mut vendor_bytes)?;
+        }
+        let vendor = String::from_utf8(vendor_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
+        let mut target_len_buf = [0u8; 4];
+        cursor.read_exact(&mut target_len_buf)?;
+        let target_len = u32::from_le_bytes(target_len_buf) as usize;
+        let mut target_bytes = vec![0u8; target_len];
+        if target_len > 0 {
+            cursor.read_exact(&mut target_bytes)?;
+        }
+        let target = String::from_utf8(target_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
+        let mut blob_align_byte = [0u8; 1];
+        cursor.read_exact(&mut blob_align_byte)?;
+        let blob_alignment = blob_align_byte[0];
+        let kind = if version >= 2 {
+            let mut kind_byte = [0u8; 1];
+            cursor.read_exact(&mut kind_byte)?;
+            ClfKind::from_byte(kind_byte[0])
+        } else {
+            ClfKind::default_for_v1()
+        };
+        let header_end = cursor.stream_position()?;
+        let header = ClfHeader { version, vendor, target, blob_alignment, kind, header_end };
+        if let Some(expected) = expected_kind {
+            if header.kind != expected {
+                return Err(ClfError::KindMismatch { expected, actual: header.kind });
+            }
+        }
+        let mut num_entries_buf = [0u8; 4];
+        cursor.read_exact(&mut num_entries_buf)?;
+        let num_entries = u32::from_le_bytes(num_entries_buf) as usize;
+        let mut manifest = HashMap::with_capacity(num_entries);
+        for _ in 0..num_entries {
+            let mut entry_buf = [0u8; ManifestEntry::ENTRY_SIZE];
+            cursor.read_exact(&mut entry_buf)?;
+            let op_id = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
+            let offset = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
+            let size = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
+            manifest.insert(op_id, ManifestEntry { op_id, offset, size });
+        }
+        let blob_store_offset = cursor.stream_position()?;
+        let data_len = data.len() as u64;
+        let has_sig = data_len >= (SIG_BLOCK_LEN as u64)
+            && data.len() >= SIG_BLOCK_LEN
+            && data[data.len() - SIG_BLOCK_LEN..data.len() - SIG_HASH_LEN] == SIG_MAGIC;
+        let blob_store_len = if has_sig {
+            data_len.saturating_sub(SIG_BLOCK_LEN as u64).saturating_sub(blob_store_offset)
+        } else {
+            data_len.saturating_sub(blob_store_offset)
+        };
+        Ok(Self {
+            header,
+            manifest,
+            data: data.to_vec(),
+            blob_store_offset,
+            blob_store_len,
+        })
+    }
+
+    /// Get blob for op_id.
+    pub fn get_blob(&self, op_id: u32) -> Result<Option<Vec<u8>>, ClfError> {
+        let entry = match self.manifest.get(&op_id) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+        let start = (self.blob_store_offset + u64::from(entry.offset)) as usize;
+        let end = start + entry.size as usize;
+        if end > self.data.len() {
+            return Err(ClfError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "manifest entry extends past blob store",
+            )));
+        }
+        Ok(Some(self.data[start..end].to_vec()))
     }
 }

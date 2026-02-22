@@ -12,7 +12,7 @@ pub const CLF_MAGIC: [u8; 4] = [0x43, 0x4C, 0x46, 0x31];
 pub const CLF_VERSION: u8 = 2;
 
 /// CLF file kind: role of the file in the Coelanox ecosystem.
-/// Used for discovery and routing via extensions (.clfc, .clfmm, .clfmp).
+/// Used for discovery and routing via extensions (.clfc, .clfmm, .clfmp, .clfe).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClfKind {
@@ -22,6 +22,8 @@ pub enum ClfKind {
     MemoryMovement = 1,
     /// Memory protection: blobs for region protection setup.
     MemoryProtection = 2,
+    /// Executor: plan runner / dispatcher (runs graph; dispatches to compute blobs).
+    Executor = 3,
 }
 
 impl ClfKind {
@@ -35,6 +37,7 @@ impl ClfKind {
         match b {
             1 => Self::MemoryMovement,
             2 => Self::MemoryProtection,
+            3 => Self::Executor,
             _ => Self::Compute,
         }
     }
@@ -45,6 +48,7 @@ impl ClfKind {
             Self::Compute => "clfc",
             Self::MemoryMovement => "clfmm",
             Self::MemoryProtection => "clfmp",
+            Self::Executor => "clfe",
         }
     }
 }

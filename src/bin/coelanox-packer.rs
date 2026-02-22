@@ -28,12 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 target = args.next().ok_or("--target requires a value (e.g. CPU, GPU, CDNA)")?;
             }
             "--kind" => {
-                let v = args.next().ok_or("--kind requires compute|memory-movement|memory-protection")?;
+                let v = args.next().ok_or("--kind requires compute|memory-movement|memory-protection|executor")?;
                 kind = match v.to_lowercase().as_str() {
                     "compute" | "c" => ClfKind::Compute,
                     "memory-movement" | "memorymovement" | "mm" => ClfKind::MemoryMovement,
                     "memory-protection" | "memoryprotection" | "mp" => ClfKind::MemoryProtection,
-                    _ => return Err(format!("--kind must be compute|memory-movement|memory-protection, got: {}", v).into()),
+                    "executor" | "e" => ClfKind::Executor,
+                    _ => return Err(format!("--kind must be compute|memory-movement|memory-protection|executor, got: {}", v).into()),
                 };
             }
             "--align" => {

@@ -1,0 +1,41 @@
+// BatchNorm kernel (op_id 35): output = (input - mean) * inv_std * gamma + beta
+// Weights buffer: [gamma[0..C], beta[0..C], mean[0..C], var[0..C]] (inference) or
+//                 [gamma[0..C], beta[0..C]] with mean/var in a separate buffer or computed.
+// This kernel expects: weights has at least gamma, beta; optional mean, var per channel.
+// Layout: weights layout = [gamma_0..gamma_C-1, beta_0..beta_C-1, mean_0..mean_C-1, var_0..var_C-1]
+// If mean/var not provided (weights_len < 4*C), we use gamma=1, beta=0 and (input-mean)*inv_std (compute mean/var per channel in kernel).
+// For inference: 4*C values in weights (gamma, beta, mean, var).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Input { float data[]; } input_buf;
+layout(set = 0, binding = 1) readonly buffer Weights { float data[]; } weights;  // gamma, beta, mean, var per channel
+layout(set = 0, binding = 3) writeonly buffer Output { float data[]; } output_buf;  // runtime: 0=in, 1=weights, 2=weights(bias), 3=out
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint C;
+    uint H;
+    uint W;
+    uint has_running;  // 1 if weights contains mean and var (4*C floats), else 0
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint total = pc.N * pc.C * pc.H * pc.W;
+    if (idx >= total) return;
+
+    uint spatial = pc.H * pc.W;
+    uint c = (idx / spatial) % pc.C;
+    float gamma = weights.data[c];
+    float beta = weights.data[pc.C + c];
+    float mean_val = 0.0;
+    float var_val = 1.0;
+    if (pc.has_running != 0u) {
+        mean_val = weights.data[2u * pc.C + c];
+        var_val = weights.data[3u * pc.C + c];
+    }
+    float inv_std = 1.0 / sqrt(var_val + 1e-5);
+    float x = input_buf.data[idx];
+    output_buf.data[idx] = (x - mean_val) * inv_std * gamma + beta;
+}

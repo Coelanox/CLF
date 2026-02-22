@@ -1,0 +1,67 @@
+// Convolution kernel (op_id 30): 2D NCHW conv with configurable kernel, stride, padding
+// Input [N, C_in, H, W], weights [C_out, C_in, kH, kW], optional bias [C_out], output [N, C_out, H_out, W_out]
+// H_out = (H + 2*padH - kH) / strideH + 1, W_out = (W + 2*padW - kW) / strideW + 1
+// One thread per output element; output index linearized as n*C_out*H_out*W_out + c_out*H_out*W_out + h_out*W_out + w_out
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Input { float data[]; } input_buf;
+layout(set = 0, binding = 1) readonly buffer Weights { float data[]; } weights;
+layout(set = 0, binding = 2) readonly buffer Bias { float data[]; } bias;
+layout(set = 0, binding = 3) writeonly buffer Output { float data[]; } output_buf;
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint C_in;
+    uint H;
+    uint W;
+    uint C_out;
+    uint kH;
+    uint kW;
+    uint strideH;
+    uint strideW;
+    uint padH;
+    uint padW;
+    uint has_bias;
+    uint H_out;
+    uint W_out;
+} pc;
+
+void main() {
+    uint out_idx = gl_GlobalInvocationID.x;
+    uint out_spatial = pc.H_out * pc.W_out;
+    uint out_channel_size = out_spatial * pc.C_out;
+    uint n = out_idx / out_channel_size;
+    uint rem = out_idx % out_channel_size;
+    uint c_out = rem / out_spatial;
+    rem = rem % out_spatial;
+    uint h_out = rem / pc.W_out;
+    uint w_out = rem % pc.W_out;
+
+    if (n >= pc.N) return;
+
+    float sum = 0.0;
+    for (uint c_in = 0u; c_in < pc.C_in; c_in++) {
+        for (uint kh = 0u; kh < pc.kH; kh++) {
+            for (uint kw = 0u; kw < pc.kW; kw++) {
+                int h = int(h_out * pc.strideH) + int(kh) - int(pc.padH);
+                int w = int(w_out * pc.strideW) + int(kw) - int(pc.padW);
+                if (h >= 0 && h < int(pc.H) && w >= 0 && w < int(pc.W)) {
+                    uint in_idx = n * pc.C_in * pc.H * pc.W
+                        + c_in * pc.H * pc.W
+                        + uint(h) * pc.W
+                        + uint(w);
+                    uint w_idx = c_out * pc.C_in * pc.kH * pc.kW
+                        + c_in * pc.kH * pc.kW
+                        + kh * pc.kW
+                        + kw;
+                    sum += input_buf.data[in_idx] * weights.data[w_idx];
+                }
+            }
+        }
+    }
+    if (pc.has_bias != 0u) {
+        sum += bias.data[c_out];
+    }
+    output_buf.data[out_idx] = sum;
+}

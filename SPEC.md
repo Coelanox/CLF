@@ -2,7 +2,14 @@
 
 ## 1. Purpose and role
 
-CLF is the **standard binary format** for shipping **pre-compiled hardware kernels** in the Coelanox ecosystem. It is a **static kernel archive**: a single file that acts as a warehouse of optimized machine-code blobs, each identified by a numeric **op_id**. The Coelanox Packager does not interpret or execute these blobs; it only **looks them up by op_id** and **copies** them into the container’s code section at **package time**. There is no runtime code generation and no loading of kernel libraries at inference. The runtime runs code that was fully embedded in the `.cnox` container when it was built.
+CLF is the **standard binary format** for shipping **pre-compiled blobs** in the Coelanox ecosystem. A CLF file is a **static blob archive**: a single file with a common header, manifest, and blob store. Each file has a **kind** (v2 header) that defines its role. The **CLF family** has four kinds:
+
+- **Compute (CLFC)** — op_id → kernel blobs. The packager looks up blobs by op_id and copies them into the container’s code section at package time. Primary use: machine code for inference ops.
+- **Memory Movement (CLFMM)** — blobs for allocate / deallocate / move. Used when the container or runtime needs vendor-supplied memory primitives (e.g. DMA). Extension `.clfmm`.
+- **Memory Protection (CLFMP)** — blobs for configure_region / enable_protection / disable_protection. Used for OS-independent protection of code and data regions. Extension `.clfmp`.
+- **Executor (CLFE)** — plan runner / dispatcher. The executor blob (and/or plan data) runs the execution plan: it walks the graph and dispatches each step to the appropriate kernel (from CLFC or another backend). Same plan format works for CPU (call into code section) or GPU (enqueue). Extension `.clfe`. See **[docs/clfe.md](docs/clfe.md)** for the execution plan format and dispatch contract.
+
+This specification defines the **single binary layout** for all kinds; the **Kind** byte in the header (v2) selects the role. For **Compute** (the original use), a CLF file acts as a warehouse of optimized machine-code blobs, each identified by a numeric **op_id**. The Coelanox Packager does not interpret or execute these blobs; it only **looks them up by op_id** and **copies** them into the container’s code section at **package time**. There is no runtime code generation and no loading of kernel libraries at inference. The runtime runs code that was fully embedded in the `.cnox` container when it was built.
 
 **Why CLF exists:**
 
@@ -13,9 +20,10 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 
 **Where CLF fits:**
 
-- **Codegen / backend (OpType / BackendTranslator):** CLF is an alternative backend source. When the backend for a target is `BackendKind::Clf`, the packager opens the `.clf` at the path registered by the backend loader, reads the manifest, and for each node in the optimized IR (in execution order) maps `OpType` → `op_id`, gets the blob for that `op_id` from the CLF, and appends it to the code section. So CLF **supplies the machine code** that would otherwise come from a BackendTranslator.
-- **Memory HAL:** The code section (built in part or entirely from CLF blobs) is what the runtime allocates or backs using the Memory HAL (e.g. executable region). So CLF-derived bytes are the **content** that ends up in Memory HAL–managed regions.
-- **Protection HAL:** The region(s) that hold CLF-derived code (and optionally weights/scratch) are the ones the Protection HAL configures (e.g. code RX, weights RO). So CLF-derived content defines **which regions** get which protection.
+- **Codegen / backend (OpType / BackendTranslator):** **CLFC** is an alternative backend source. When the backend for a target is `BackendKind::Clf`, the packager opens the `.clfc` (or legacy `.clf`) at the path registered by the backend loader, reads the manifest, and for each node in the optimized IR (in execution order) maps `OpType` → `op_id`, gets the blob for that `op_id` from the CLF, and appends it to the code section. So CLFC **supplies the machine code** that would otherwise come from a BackendTranslator.
+- **Executor (CLFE):** The runtime (or host) may load an **executor blob** from a `.clfe` file (or from the container if the packager embedded it). That blob parses the execution plan and dispatches each step to the code section (CLFC blobs) or to a device. See [docs/clfe.md](docs/clfe.md).
+- **Memory HAL:** The code section (built in part or entirely from CLFC blobs) is what the runtime allocates or backs using the Memory HAL (e.g. executable region). **CLFMM** blobs may implement the Memory HAL contract (allocate / deallocate / move) when embedded in the container.
+- **Protection HAL:** The region(s) that hold CLF-derived code (and optionally weights/scratch) are the ones the Protection HAL configures (e.g. code RX, weights RO). **CLFMP** blobs may implement the Protection HAL contract (configure_region / enable / disable) when embedded in the container.
 
 ---
 
@@ -65,23 +73,26 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 | Target length    | 4 B    | Little-endian u32 (M); 0 = no target                |
 | Target           | M B    | UTF-8 target/architecture (e.g. "CPU", "GPU", "CDNA"). Packager uses this to match CLF to target. |
 | Blob alignment   | 1 B    | Alignment in bytes for blobs in blob store (0 = none). Producer pads each blob to this alignment (e.g. 16 for code). |
-| Kind             | 1 B    | *(v2 only)* File kind: 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection. Source of truth for the file's role. |
+| Kind             | 1 B    | *(v2 only)* File kind: 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection, 3 = Executor. Source of truth for the file's role. |
 
 - **Header size:** Version 1: 4 + 1 + 4 + N + 4 + M + 1 bytes. Version 2: + 1 byte (kind) = 4 + 1 + 4 + N + 4 + M + 1 + 1 bytes.
 - **Version policy:** Version 1 = layout without kind. Version 2 = layout with kind. Readers must reject version &gt; supported. No renumbering of existing fields.
-- **Kind (v2):** 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection. For v1 files, kind is absent and defaults to Compute (backwards compatibility).
+- **Kind (v2):** 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection, 3 = Executor. For v1 files, kind is absent and defaults to Compute (backwards compatibility).
 - **Validate on open:** Consumers may validate that the header kind matches the expected kind (e.g. when opening a `.clfmm` file, expect MemoryMovement); reject if mismatch.
 - **Target:** Optional. If target length is 0, no target bytes follow. Enables the packager to select a CLF by target (e.g. from header) in addition to filename (e.g. `cpu.clf`, `gpu.clf`).
 - **Blob alignment:** 0 = blobs stored back-to-back. If &gt; 0, each blob is padded to a multiple of this value in the blob store; manifest offset/size refer to the stored (padded) layout.
 
 ### 3.1.1 File extensions (discovery and routing)
 
-| Extension | Meaning                                      | Kind (when absent, treat as Compute) |
-|-----------|----------------------------------------------|--------------------------------------|
-| `.clfc`   | Coelanox Library File Compute                | Compute                              |
-| `.clfmm`  | Coelanox Library File Memory Movement        | MemoryMovement                       |
-| `.clfmp`  | Coelanox Library File Memory Protection      | MemoryProtection                     |
+| Extension | Meaning                                      | Kind (v2 header) |
+|-----------|----------------------------------------------|------------------|
+| `.clfc`   | Coelanox Library File **Compute**            | Compute (0)       |
+| `.clfmm`  | Coelanox Library File **Memory Movement**   | MemoryMovement (1) |
+| `.clfmp`  | Coelanox Library File **Memory Protection** | MemoryProtection (2) |
+| `.clfe`   | Coelanox Library File **Executor**          | Executor (3). Plan runner / dispatcher; see [docs/clfe.md](docs/clfe.md). |
 | `.clf`    | Legacy; compute-only                         | Compute (backwards compatibility)   |
+
+Consumers should validate that the file’s Kind byte matches the expected kind for the extension (e.g. when opening a `.clfe` file, expect Kind = Executor).
 
 ### 3.2 Manifest
 
@@ -125,7 +136,7 @@ CLF is the **standard binary format** for shipping **pre-compiled hardware kerne
 | **Blob offset / size** | u32 each | Max ~4 GiB per blob; blob store can be very large. Sufficient for any single kernel. |
 | **Format version** | u8 | 256 versions; new layout = new version. |
 | **Blob alignment** | u8 (0–255) | Alignment in bytes; 16–64 covers all common ISAs. |
-| **Kind** | u8 (v2) | 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection. |
+| **Kind** | u8 (v2) | 0 = Compute, 1 = MemoryMovement, 2 = MemoryProtection, 3 = Executor. |
 
 ### 4.2 Future-proofing
 

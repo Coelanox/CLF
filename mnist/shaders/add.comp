@@ -1,0 +1,18 @@
+// Add kernel (op_id 1): output[i] = input_a[i] + input_b[i]
+// General-purpose; element count from push constant.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer InputA { float data[]; } input_a;
+layout(set = 0, binding = 1) readonly buffer InputB { float data[]; } input_b;
+layout(set = 0, binding = 3) writeonly buffer Output { float data[]; } output_buf;  // runtime: 0=in, 1=in2, 2=weights, 3=out
+
+layout(push_constant) uniform PushConstants {
+    uint count;  // total number of elements
+} pc;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.count) return;
+    output_buf.data[idx] = input_a.data[idx] + input_b.data[idx];
+}

@@ -2,7 +2,14 @@
 
 CLF is the standard binary format for shipping pre-compiled hardware kernels in the Coelanox ecosystem. It is a static kernel archive: one file containing optimized machine-code blobs keyed by numeric op_id. The packager looks up blobs by op_id and copies them into the container at package time; there is no runtime code generation or kernel loading.
 
-**Three uses for the three HALs:**
+**CLF family (kind = what the runtime uses; extension = for discovery):**
+
+- **CLFC** (Compute): op_id → kernel blobs. Extension `.clfc`.
+- **CLFMM** (Memory movement): memory copy/move blobs. Extension `.clfmm`.
+- **CLFMP** (Memory protection): region protection blobs. Extension `.clfmp`.
+- **CLFE** (Executor): plan runner / dispatcher; see [docs/clfe.md](docs/clfe.md). Extension `.clfe`.
+
+**Three uses for the three HALs (compute / memory / protection):**
 
 - **Codegen / backend:** CLF supplies the machine code that would otherwise come from a BackendTranslator. When the backend is `BackendKind::Clf`, the packager opens the `.clf`, maps each IR node’s OpType to op_id, and appends the corresponding blob to the code section.
 - **Memory HAL:** The code section (built from CLF blobs) is what the runtime allocates or backs via the Memory HAL (e.g. executable region). CLF-derived bytes are the content of those regions.
@@ -10,10 +17,11 @@ CLF is the standard binary format for shipping pre-compiled hardware kernels in 
 
 **Spec and docs:**
 
-- [SPEC.md](SPEC.md) — full format specification (binary layout, target, alignment, signature, version policy).
+- [SPEC.md](SPEC.md) — full format specification (binary layout, target, alignment, **kind** including Executor, signature, version policy). Section 1 and 3.1.1 describe the CLF family (CLFC, CLFMM, CLFMP, **CLFE**).
 - [docs/op_ids.md](docs/op_ids.md) — canonical op_id registry (single source of truth; custom range 256–65535; stability).
-- [docs/PRODUCER_GUIDE.md](docs/PRODUCER_GUIDE.md) — how to produce a valid .clf (packer usage, op_ids, optional signing).
-- [docs/CONSUMER_NOTE.md](docs/CONSUMER_NOTE.md) — how the packager uses CLF (discovery, target match, op_id lookup, missing-op policy, three HALs).
+- [docs/clfe.md](docs/clfe.md) — **CLFE (Executor):** execution plan format and dispatch contract. Referenced from the spec.
+- [docs/PRODUCER_GUIDE.md](docs/PRODUCER_GUIDE.md) — how to produce a valid .clf (packer usage, op_ids, **--kind**, optional signing).
+- [docs/CONSUMER_NOTE.md](docs/CONSUMER_NOTE.md) — how the packager and runtime use CLF (CLF family, discovery, target match, op_id lookup, missing-op policy, HALs).
 
 **This repo provides:**
 

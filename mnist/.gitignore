@@ -1,0 +1,6 @@
+# Compiled SPIR-V blobs
+spv/
+*.spv
+
+# Packed CLF Compute output
+*.clfc

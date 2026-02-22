@@ -1,11 +1,22 @@
 # How the Coelanox Packager uses CLF (consumer note)
 
-This note describes how the packager discovers CLFs, matches them to a target, builds the code section, and how that relates to the three HALs.
+This note describes how the packager discovers CLFs, matches them to a target, builds the code section, and how that relates to the CLF family and HALs.
+
+## CLF family (four kinds)
+
+CLF files share one binary format; the **Kind** byte in the v2 header (and the file extension) select the role:
+
+- **CLFC** (Compute, `.clfc`): op_id → kernel blobs. The **packager** uses these to build the container’s code section (see below). Primary consumer: packager.
+- **CLFMM** (Memory Movement, `.clfmm`): blobs for allocate / deallocate / move. May be embedded in the container; **runtime** uses them for Memory HAL when present.
+- **CLFMP** (Memory Protection, `.clfmp`): blobs for configure_region / enable / disable. May be embedded in the container; **runtime** uses them for Protection HAL when present.
+- **CLFE** (Executor, `.clfe`): executor blob (plan runner) and/or plan data. The **runtime** (or host) can load an executor blob to run the execution plan (parse plan, dispatch each step to the code section or device). Same vendor that provides CLFC for a target typically provides the matching CLFE. See [clfe.md](clfe.md) for plan format and dispatch contract.
+
+Discovery and code-section building below apply to **CLFC** (and legacy `.clf`). CLFE / CLFMM / CLFMP are discovered by extension or kind for runtime or packager embedding.
 
 ## Discovery and target matching
 
-- **Backend loader** scans backend search paths for `.clf` (and optionally `.so`/`.dll`). For each `.clf` it registers a backend with `kind: BackendKind::Clf`, `library_path: path to .clf`, and `supported_targets` (e.g. from the CLF **target** field in the header, or from a convention like `cpu.clf` / `gpu.clf`).
-- When generating machine code for a **target**, the packager calls `find_backend_for_target(target)`. If the returned backend is CLF, it opens the `.clf` at `backend_info.library_path` and uses the CLF reader. Optionally it checks that `reader.header.target` matches the requested target (or relies on the loader having set `supported_targets` from the header or filename).
+- **Backend loader** scans backend search paths for `.clf` and `.clfc` (and optionally `.clfmm`, `.clfmp`, `.clfe`, `.so`/`.dll`). For each CLF it may check the header **kind** (e.g. only register as code backend when kind is Compute). It registers a backend with `kind: BackendKind::Clf`, `library_path: path to .clf/.clfc`, and `supported_targets` (e.g. from the CLF **target** field in the header, or from a convention like `cpu.clfc` / `gpu.clfc`).
+- When generating machine code for a **target**, the packager calls `find_backend_for_target(target)`. If the returned backend is CLF, it opens the file at `backend_info.library_path` and uses the CLF reader. Optionally it checks that `reader.header.target` matches the requested target and that **kind** is Compute (or legacy). See [clfe.md](clfe.md) for how the executor (CLFE) uses the plan and code section.
 
 ## Building the code section
 

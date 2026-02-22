@@ -1,0 +1,30 @@
+// GlobalAvgPool kernel (op_id 34): output[n,c] = mean of input over H,W for (n,c)
+// Input layout NCHW flat: [n][c][h][w] -> index n*C*H*W + c*H*W + h*W + w
+// Output: one value per (n,c), flat [n*C + c]
+#version 450
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer Input { float data[]; } input_buf;
+layout(set = 0, binding = 3) writeonly buffer Output { float data[]; } output_buf;  // runtime: 0=in, 1=in2, 2=weights, 3=out
+
+layout(push_constant) uniform PushConstants {
+    uint N;
+    uint C;
+    uint H;
+    uint W;
+} pc;
+
+void main() {
+    uint nc = gl_GlobalInvocationID.x;
+    uint n = nc / pc.C;
+    uint c = nc % pc.C;
+    if (n >= pc.N) return;
+
+    uint spatial = pc.H * pc.W;
+    uint base = n * pc.C * spatial + c * spatial;
+    float sum = 0.0;
+    for (uint i = 0u; i < spatial; i++) {
+        sum += input_buf.data[base + i];
+    }
+    output_buf.data[nc] = sum / float(spatial);
+}
