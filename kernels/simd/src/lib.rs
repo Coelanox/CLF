@@ -1,15 +1,28 @@
-//! SIMD kernels for 6 neural-network ops. Fixed C ABI for use from C/Rust or a minimal runtime (e.g. CLFC).
+//! SIMD kernels for neural-network ops (BERT + CNN). Fixed C ABI for use from C/Rust or a minimal runtime (e.g. CLFC).
 //!
-//! **ABI summary** (all sizes in **elements**, not bytes; pointers are non-null, buffers pre-allocated by caller):
+//! **Canonical op_id → op name (each CLFC blob is standalone, keyed by op_id):**
 //!
-//! | Op            | Arguments | Notes |
-//! |---------------|-----------|--------|
-//! | Add           | out, a, b, count | 1D; count = len(a)=len(b)=len(out). |
-//! | ReLU          | out, x, count | 1D. |
-//! | BatchNorm     | out, x, scale, bias, mean, var, n, c, h, w | x/out NCHW; scale/bias/mean/var length C. |
-//! | GlobalAvgPool | out, inp, n, c, h, w | inp NCHW (n*c*h*w); out (n*c). |
-//! | Convolution   | out, inp, weights, bias, n, c_in, h, w, c_out, k_h, k_w, stride_h, stride_w, pad_h, pad_w | bias may be null; weights [c_out, c_in, k_h, k_w]. |
-//! | MatMul        | out, a, b, m, k, n | a [M,K], b [K,N], out [M,N]; row-major. |
+//! | op_id | Op         | op_id | Op            | op_id | Op            |
+//! |-------|------------|-------|---------------|-------|---------------|
+//! | 0     | (unknown)  | 20    | Sqrt          | 40    | Reshape       |
+//! | 1     | Add        | 21    | Pow           | 41    | Transpose     |
+//! | 2     | Subtract   | 22    | Cos           | 42    | Permute       |
+//! | 3     | Multiply   | 23    | Sin           | 43    | Concatenate   |
+//! | 4     | Divide     | 24    | Exp           | 44    | Split         |
+//! | 10    | Relu       | 25    | Log           | 45    | Slice         |
+//! | 11    | Sigmoid    | 30    | Convolution   | 46    | Gather        |
+//! | 12    | Tanh       | 31    | MaxPool       | 47    | Scatter       |
+//! | 13    | Softmax    | 32    | AvgPool       | 50    | MatMul        |
+//! | 14    | LogSoftmax | 33    | GlobalMaxPool | 51    | Gemm          |
+//! | 15    | Gelu       | 34    | GlobalAvgPool | 60    | ReduceSum     |
+//! | 16    | Swish      | 35    | BatchNorm     | 61    | ReduceMean    |
+//! |       | 17–19 reserved | 36 | LayerNorm    | 62    | ReduceMax     |
+//! |       |            | 37    | Dropout       | 63    | ReduceMin     |
+//! |       | 26–29 reserved | 38–39 reserved | 64    | ReduceProd    |
+//! |       |            |       |               | 80–85 | Equal,NotEqual,Greater,GreaterEqual,Less,LessEqual |
+//! |       |            |       |               | 90    | And           |
+//! |       |            |       |               | 91    | Or            |
+//! |       |            |       |               | 92    | Not           |
 
 //! For a true no_std / no-OS build: use nightly, `rustup component add rust-src`, and
 //! `cargo build -Z build-std=core,panic_abort --release` with a panic handler.
@@ -488,6 +501,883 @@ pub unsafe extern "C" fn clf_simd_matmul(
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
     {
         matmul_scalar(out, a, b, m, k, n);
+    }
+}
+
+// --------------- LayerNorm (op_id 36) ---------------
+// out = (x - mean) / sqrt(var + eps) * gamma + beta. Normalized over last C elements; gamma/beta length C.
+// Weights: gamma (C), beta (C) => w_len = 2*C. in_len = out_len. C = w_len/2. Rows = in_len/C.
+const LN_EPS: f32 = 1e-5;
+
+#[inline(always)]
+unsafe fn layernorm_scalar(
+    out: *mut f32,
+    x: *const f32,
+    scale: *const f32,
+    bias: *const f32,
+    count: usize,
+    c: usize,
+) {
+    let n_rows = count / c;
+    for r in 0..n_rows {
+        let base = r * c;
+        let mut mean = 0.0f32;
+        for i in 0..c {
+            mean += *x.add(base + i);
+        }
+        mean /= c as f32;
+        let mut var = 0.0f32;
+        for i in 0..c {
+            let d = *x.add(base + i) - mean;
+            var += d * d;
+        }
+        var = (var / c as f32) + LN_EPS;
+        let inv_std = 1.0 / sqrtf(var);
+        for i in 0..c {
+            let v = (*x.add(base + i) - mean) * inv_std * *scale.add(i) + *bias.add(i);
+            *out.add(base + i) = v;
+        }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn layernorm_avx2(
+    out: *mut f32,
+    x: *const f32,
+    scale: *const f32,
+    bias: *const f32,
+    count: usize,
+    c: usize,
+) {
+    let n_rows = count / c;
+    for r in 0..n_rows {
+        let base = r * c;
+        let (mean, var) = {
+            let mut mean = 0.0f32;
+            for i in 0..c {
+                mean += *x.add(base + i);
+            }
+            mean /= c as f32;
+            let mut var = 0.0f32;
+            for i in 0..c {
+                let d = *x.add(base + i) - mean;
+                var += d * d;
+            }
+            (mean, (var / c as f32) + LN_EPS)
+        };
+        let inv_std = 1.0 / sqrtf(var);
+        let mean_v = _mm256_set1_ps(mean);
+        let inv_std_v = _mm256_set1_ps(inv_std);
+        let mut i = 0usize;
+        while i + LANE_F32 <= c {
+            let v = _mm256_loadu_ps(x.add(base + i));
+            let sc = _mm256_loadu_ps(scale.add(i));
+            let bi = _mm256_loadu_ps(bias.add(i));
+            let n = _mm256_mul_ps(_mm256_mul_ps(_mm256_sub_ps(v, mean_v), inv_std_v), sc);
+            _mm256_storeu_ps(out.add(base + i), _mm256_add_ps(n, bi));
+            i += LANE_F32;
+        }
+        for ii in i..c {
+            *out.add(base + ii) = (*x.add(base + ii) - mean) * inv_std * *scale.add(ii) + *bias.add(ii);
+        }
+    }
+}
+
+/// LayerNorm: normalize over last C elements; scale by gamma, add beta. w = [gamma (C), beta (C)], w_len=2*C.
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_layernorm(
+    out: *mut f32,
+    x: *const f32,
+    scale: *const f32,
+    bias: *const f32,
+    count: usize,
+    c: usize,
+) {
+    if count == 0 || c == 0 {
+        return;
+    }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+    {
+        layernorm_avx2(out, x, scale, bias, count, c);
+    }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
+    {
+        layernorm_scalar(out, x, scale, bias, count, c);
+    }
+}
+
+
+// --------------- Softmax (op_id 13) ---------------
+// out = exp(x - max) / sum(exp(x - max)). Per row; row_len = cols. in_len = rows*cols.
+#[inline(always)]
+unsafe fn softmax_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut max_x = *x.add(base);
+        for c in 1..cols {
+            let v = *x.add(base + c);
+            if v > max_x {
+                max_x = v;
+            }
+        }
+        let mut sum = 0.0f32;
+        for c in 0..cols {
+            let v = *x.add(base + c);
+            let e = expf_approx(v - max_x);
+            *out.add(base + c) = e;
+            sum += e;
+        }
+        let inv_sum = 1.0 / sum;
+        for c in 0..cols {
+            *out.add(base + c) *= inv_sum;
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn expf_approx(x: f32) -> f32 {
+    libm::expf(x)
+}
+#[cfg(feature = "std")]
+fn expf_approx(x: f32) -> f32 {
+    x.exp()
+}
+
+/// Softmax over last dimension. rows = in_len/cols, cols = row length (or in_len if 1D).
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_softmax(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    softmax_scalar(out, x, rows, cols);
+}
+
+
+// --------------- Gelu (op_id 15) ---------------
+// GELU approx: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+#[inline(always)]
+unsafe fn gelu_scalar(out: *mut f32, x: *const f32, count: usize) {
+    const SQRTPI: f32 = 0.7978845608; // sqrt(2/pi)
+    for i in 0..count {
+        let v = *x.add(i);
+        let inner = v + 0.044715 * v * v * v;
+        #[cfg(not(feature = "std"))]
+        let t = libm::tanhf(SQRTPI * inner);
+        #[cfg(feature = "std")]
+        let t = (SQRTPI * inner).tanh();
+        *out.add(i) = 0.5 * v * (1.0 + t);
+    }
+}
+
+/// Gelu: 0.5 * x * (1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3))).
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_gelu(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 {
+        return;
+    }
+    gelu_scalar(out, x, count);
+}
+
+// --------------- Reshape (op_id 40) ---------------
+// Copy in -> out (same element count). No shape change in data layout.
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_reshape(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 {
+        return;
+    }
+    if out != x as *mut f32 {
+        core::ptr::copy_nonoverlapping(x, out, count);
+    }
+}
+
+// --------------- Transpose (op_id 41) ---------------
+// 2D transpose: out[col*rows+row] = in[row*cols+col]. in_len = out_len = rows*cols.
+#[inline(always)]
+unsafe fn transpose_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for row in 0..rows {
+        for col in 0..cols {
+            *out.add(col * rows + row) = *x.add(row * cols + col);
+        }
+    }
+}
+
+/// Transpose 2D matrix. rows and cols from dimensions (rows*cols = in_len).
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_transpose(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    transpose_scalar(out, x, rows, cols);
+}
+
+
+// --------------- Gemm (op_id 51) ---------------
+// Same as MatMul for SIMD (alpha applied in scalar path or via separate scale). out = A @ B.
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_gemm(
+    out: *mut f32,
+    a: *const f32,
+    b: *const f32,
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    clf_simd_matmul(out, a, b, m, k, n);
+}
+
+// =============================================================================
+// Remaining canonical op_ids (2–4, 11–16, 20–25, 31–33, 37, 42–47, 60–64, 80–85, 90–92)
+// =============================================================================
+
+// --------------- Subtract (2) ---------------
+#[inline(always)]
+fn subtract_scalar(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count {
+        unsafe { *out.add(i) = *a.add(i) - *b.add(i) };
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn subtract_avx2(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let va = _mm256_loadu_ps(a.add(i));
+        let vb = _mm256_loadu_ps(b.add(i));
+        _mm256_storeu_ps(out.add(i), _mm256_sub_ps(va, vb));
+        i += LANE_F32;
+    }
+    subtract_scalar(out.add(i), a.add(i), b.add(i), count - i);
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_subtract(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { subtract_avx2(out, a, b, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { subtract_scalar(out, a, b, count); }
+}
+
+// --------------- Multiply (3) ---------------
+#[inline(always)]
+fn multiply_scalar(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count { unsafe { *out.add(i) = *a.add(i) * *b.add(i) }; }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn multiply_avx2(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        _mm256_storeu_ps(out.add(i), _mm256_mul_ps(_mm256_loadu_ps(a.add(i)), _mm256_loadu_ps(b.add(i))));
+        i += LANE_F32;
+    }
+    multiply_scalar(out.add(i), a.add(i), b.add(i), count - i);
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_multiply(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { multiply_avx2(out, a, b, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { multiply_scalar(out, a, b, count); }
+}
+
+// --------------- Divide (4) ---------------
+#[inline(always)]
+fn divide_scalar(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count {
+        let bv = unsafe { *b.add(i) };
+        unsafe { *out.add(i) = if bv == 0.0 { 0.0 } else { *a.add(i) / bv } };
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn divide_avx2(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        _mm256_storeu_ps(out.add(i), _mm256_div_ps(_mm256_loadu_ps(a.add(i)), _mm256_loadu_ps(b.add(i))));
+        i += LANE_F32;
+    }
+    divide_scalar(out.add(i), a.add(i), b.add(i), count - i);
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_divide(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { divide_avx2(out, a, b, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { divide_scalar(out, a, b, count); }
+}
+
+// --------------- Sigmoid (11) ---------------
+#[inline(always)]
+fn sigmoid_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        let v = unsafe { *x.add(i) };
+        #[cfg(not(feature = "std"))]
+        let e = libm::expf(-v);
+        #[cfg(feature = "std")]
+        let e = (-v).exp();
+        unsafe { *out.add(i) = 1.0 / (1.0 + e) };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_sigmoid(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    sigmoid_scalar(out, x, count);
+}
+
+// --------------- Tanh (12) ---------------
+#[inline(always)]
+fn tanh_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        #[cfg(not(feature = "std"))]
+        let t = libm::tanhf(unsafe { *x.add(i) });
+        #[cfg(feature = "std")]
+        let t = (unsafe { *x.add(i) }).tanh();
+        unsafe { *out.add(i) = t };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_tanh(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    tanh_scalar(out, x, count);
+}
+
+// --------------- LogSoftmax (14): log(softmax(x)) = x - max - log(sum(exp(x - max))) ---------------
+#[inline(always)]
+unsafe fn log_softmax_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut max_x = *x.add(base);
+        for c in 1..cols { let v = *x.add(base + c); if v > max_x { max_x = v; } }
+        let mut sum = 0.0f32;
+        for c in 0..cols {
+            let e = expf_approx(*x.add(base + c) - max_x);
+            *out.add(base + c) = e;
+            sum += e;
+        }
+        #[cfg(not(feature = "std"))]
+        let log_sum = if sum > 0.0 { libm::logf(sum) } else { -1e10 };
+        #[cfg(feature = "std")]
+        let log_sum = if sum > 0.0 { sum.ln() } else { -1e10 };
+        for c in 0..cols {
+            *out.add(base + c) = *x.add(base + c) - max_x - log_sum;
+        }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_log_softmax(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 { return; }
+    log_softmax_scalar(out, x, rows, cols);
+}
+
+// --------------- Swish (16): x * sigmoid(x) ---------------
+#[inline(always)]
+fn swish_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        let v = unsafe { *x.add(i) };
+        #[cfg(not(feature = "std"))]
+        let s = 1.0 / (1.0 + libm::expf(-v));
+        #[cfg(feature = "std")]
+        let s = 1.0 / (1.0 + (-v).exp());
+        unsafe { *out.add(i) = v * s };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_swish(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    swish_scalar(out, x, count);
+}
+
+// --------------- Sqrt (20), Pow (21), Cos (22), Sin (23), Exp (24), Log (25) ---------------
+#[inline(always)]
+fn sqrt_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        let v = unsafe { *x.add(i) };
+        unsafe { *out.add(i) = sqrtf(v.max(0.0)); }
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn sqrt_avx2(out: *mut f32, x: *const f32, count: usize) {
+    let zero = _mm256_setzero_ps();
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let v = _mm256_loadu_ps(x.add(i));
+        _mm256_storeu_ps(out.add(i), _mm256_sqrt_ps(_mm256_max_ps(v, zero)));
+        i += LANE_F32;
+    }
+    sqrt_scalar(out.add(i), x.add(i), count - i);
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_sqrt(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { sqrt_avx2(out, x, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { sqrt_scalar(out, x, count); }
+}
+#[inline(always)]
+fn pow_scalar(out: *mut f32, x: *const f32, count: usize, exp: f32) {
+    for i in 0..count {
+        #[cfg(not(feature = "std"))]
+        let v = libm::powf(unsafe { *x.add(i) }, exp);
+        #[cfg(feature = "std")]
+        let v = (unsafe { *x.add(i) }).powf(exp);
+        unsafe { *out.add(i) = v };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_pow(out: *mut f32, x: *const f32, count: usize, exp: f32) {
+    if count == 0 { return; }
+    pow_scalar(out, x, count, exp);
+}
+#[inline(always)]
+fn cos_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        #[cfg(not(feature = "std"))]
+        let v = libm::cosf(unsafe { *x.add(i) });
+        #[cfg(feature = "std")]
+        let v = (unsafe { *x.add(i) }).cos();
+        unsafe { *out.add(i) = v };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_cos(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    cos_scalar(out, x, count);
+}
+#[inline(always)]
+fn sin_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        #[cfg(not(feature = "std"))]
+        let v = libm::sinf(unsafe { *x.add(i) });
+        #[cfg(feature = "std")]
+        let v = (unsafe { *x.add(i) }).sin();
+        unsafe { *out.add(i) = v };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_sin(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    sin_scalar(out, x, count);
+}
+#[inline(always)]
+fn exp_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count { unsafe { *out.add(i) = expf_approx(*x.add(i)); }; }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_exp(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    exp_scalar(out, x, count);
+}
+#[inline(always)]
+fn log_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        let v = unsafe { *x.add(i) };
+        #[cfg(not(feature = "std"))]
+        let l = if v > 0.0 { libm::logf(v) } else { -1e10 };
+        #[cfg(feature = "std")]
+        let l = if v > 0.0 { v.ln() } else { -1e10 };
+        unsafe { *out.add(i) = l };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_log(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    log_scalar(out, x, count);
+}
+
+// --------------- MaxPool (31), AvgPool (32), GlobalMaxPool (33) ---------------
+// NCHW. kernel 2x2, stride 2, pad 0. in_len=n*c*h*w, out_len=n*c*(h/2)*(w/2). h,w from spatial.
+fn max_pool_2x2_scalar(out: *mut f32, inp: *const f32, n: usize, c: usize, h: usize, w: usize) {
+    let h_out = h / 2;
+    let w_out = w / 2;
+    let in_hw = h * w;
+    let out_hw = h_out * w_out;
+    for ni in 0..n {
+        for ci in 0..c {
+            for ho in 0..h_out {
+                for wo in 0..w_out {
+                    let mut m = unsafe { *inp.add(ni * c * in_hw + ci * in_hw + (2 * ho) * w + (2 * wo)) };
+                    for dh in 0..2usize {
+                        for dw in 0..2usize {
+                            let v = unsafe { *inp.add(ni * c * in_hw + ci * in_hw + (2 * ho + dh) * w + (2 * wo + dw)) };
+                            if v > m { m = v; }
+                        }
+                    }
+                    unsafe { *out.add(ni * c * out_hw + ci * out_hw + ho * w_out + wo) = m };
+                }
+            }
+        }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_max_pool(out: *mut f32, inp: *const f32, n: usize, c: usize, h: usize, w: usize) {
+    if n == 0 || c == 0 || h < 2 || w < 2 { return; }
+    max_pool_2x2_scalar(out, inp, n, c, h, w);
+}
+unsafe fn avg_pool_2x2_scalar(out: *mut f32, inp: *const f32, n: usize, c: usize, h: usize, w: usize) {
+    let h_out = h / 2;
+    let w_out = w / 2;
+    let in_hw = h * w;
+    let out_hw = h_out * w_out;
+    let scale = 1.0 / 4.0;
+    for ni in 0..n {
+        for ci in 0..c {
+            for ho in 0..h_out {
+                for wo in 0..w_out {
+                    let mut sum = 0.0f32;
+                    for dh in 0..2 { for dw in 0..2 {
+                        sum += *inp.add(ni * c * in_hw + ci * in_hw + (2 * ho + dh) * w + (2 * wo + dw));
+                    }}
+                    *out.add(ni * c * out_hw + ci * out_hw + ho * w_out + wo) = sum * scale;
+                }
+            }
+        }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_avg_pool(out: *mut f32, inp: *const f32, n: usize, c: usize, h: usize, w: usize) {
+    if n == 0 || c == 0 || h < 2 || w < 2 { return; }
+    avg_pool_2x2_scalar(out, inp, n, c, h, w);
+}
+#[inline(always)]
+unsafe fn global_max_pool_scalar(out: *mut f32, inp: *const f32, n: usize, c: usize, h: usize, w: usize) {
+    let hw = h * w;
+    let chw = c * hw;
+    for ni in 0..n {
+        for ci in 0..c {
+            let base = ni * chw + ci * hw;
+            let mut m = *inp.add(base);
+            for j in 1..hw { let v = *inp.add(base + j); if v > m { m = v; } }
+            *out.add(ni * c + ci) = m;
+        }
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_global_max_pool(out: *mut f32, inp: *const f32, n: usize, c: usize, h: usize, w: usize) {
+    if n == 0 || c == 0 || h == 0 || w == 0 { return; }
+    unsafe { global_max_pool_scalar(out, inp, n, c, h, w); }
+}
+
+// --------------- Dropout (37): inference = identity copy ---------------
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_dropout(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    if out != x as *mut f32 { core::ptr::copy_nonoverlapping(x, out, count); }
+}
+
+// --------------- Permute (42), Concatenate (43), Split (44), Slice (45), Gather (46), Scatter (47) ---------------
+// Plan: single in/out. Permute: 2D transpose when rows=w_len; else copy. Concat/Split: copy. Slice: copy first out_len. Gather: w = indices (f32 as u32).
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_permute(out: *mut f32, x: *const f32, in_len: usize, out_len: usize, rows: usize) {
+    if in_len == 0 || out_len != in_len { if out != x as *mut f32 && out_len > 0 { core::ptr::copy_nonoverlapping(x, out, out_len.min(in_len)); } return; }
+    if rows > 0 && in_len % rows == 0 { let cols = in_len / rows; transpose_scalar(out, x, rows, cols); } else { core::ptr::copy_nonoverlapping(x, out, in_len); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_concatenate(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    if out != x as *mut f32 { core::ptr::copy_nonoverlapping(x, out, count); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_split(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    if out != x as *mut f32 { core::ptr::copy_nonoverlapping(x, out, count); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_slice(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 { return; }
+    if out != x as *mut f32 { core::ptr::copy_nonoverlapping(x, out, count); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_gather(out: *mut f32, data: *const f32, indices: *const f32, out_len: usize, data_len: usize) {
+    for i in 0..out_len {
+        let idx = unsafe { *indices.add(i) } as i32 as usize;
+        if idx < data_len { unsafe { *out.add(i) = *data.add(idx) }; }
+    }
+}
+/// Scatter: output is zeroed, then output[indices[i]] = data[i]. Matches scalar semantics.
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_scatter(out: *mut f32, data: *const f32, indices: *const f32, in_len: usize, out_len: usize) {
+    for j in 0..out_len {
+        *out.add(j) = 0.0;
+    }
+    for i in 0..in_len {
+        let idx = (*indices.add(i) as i32).clamp(0, out_len as i32 - 1) as usize;
+        *out.add(idx) = *data.add(i);
+    }
+}
+
+// --------------- ReduceSum (60), ReduceMean (61), ReduceMax (62), ReduceMin (63), ReduceProd (64) ---------------
+// Reduce over last dim: in_len = rows*cols, out_len = rows. Plan gives in_len, out_len => cols = in_len/out_len.
+
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn horizontal_sum_avx2(v: __m256) -> f32 {
+    let shuf = _mm256_shuffle_ps(v, v, 0b10_11_00_01);
+    let sum1 = _mm256_add_ps(v, shuf);
+    let shuf2 = _mm256_permute2f128_ps(sum1, sum1, 1);
+    let sum2 = _mm256_add_ps(sum1, shuf2);
+    let shuf3 = _mm256_shuffle_ps(sum2, sum2, 0b01_00_11_10);
+    let sum3 = _mm256_add_ps(sum2, shuf3);
+    _mm256_cvtss_f32(sum3)
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn horizontal_max_avx2(v: __m256) -> f32 {
+    let shuf = _mm256_shuffle_ps(v, v, 0b10_11_00_01);
+    let max1 = _mm256_max_ps(v, shuf);
+    let shuf2 = _mm256_permute2f128_ps(max1, max1, 1);
+    let max2 = _mm256_max_ps(max1, shuf2);
+    let shuf3 = _mm256_shuffle_ps(max2, max2, 0b01_00_11_10);
+    let max3 = _mm256_max_ps(max2, shuf3);
+    _mm256_cvtss_f32(max3)
+}
+
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn horizontal_min_avx2(v: __m256) -> f32 {
+    let shuf = _mm256_shuffle_ps(v, v, 0b10_11_00_01);
+    let min1 = _mm256_min_ps(v, shuf);
+    let shuf2 = _mm256_permute2f128_ps(min1, min1, 1);
+    let min2 = _mm256_min_ps(min1, shuf2);
+    let shuf3 = _mm256_shuffle_ps(min2, min2, 0b01_00_11_10);
+    let min3 = _mm256_min_ps(min2, shuf3);
+    _mm256_cvtss_f32(min3)
+}
+
+unsafe fn reduce_sum_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut s = 0.0f32;
+        for c in 0..cols { s += *x.add(base + c); }
+        *out.add(r) = s;
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+unsafe fn reduce_sum_avx2(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut acc = _mm256_setzero_ps();
+        let mut c = 0usize;
+        while c + LANE_F32 <= cols {
+            acc = _mm256_add_ps(acc, _mm256_loadu_ps(x.add(base + c)));
+            c += LANE_F32;
+        }
+        let mut s = horizontal_sum_avx2(acc);
+        for cc in c..cols {
+            s += *x.add(base + cc);
+        }
+        *out.add(r) = s;
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_reduce_sum(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_sum_avx2(out, x, rows, cols); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { reduce_sum_scalar(out, x, rows, cols); }
+}
+unsafe fn reduce_mean_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    let inv = 1.0 / cols as f32;
+    for r in 0..rows {
+        let base = r * cols;
+        let mut s = 0.0f32;
+        for c in 0..cols { s += *x.add(base + c); }
+        *out.add(r) = s * inv;
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+unsafe fn reduce_mean_avx2(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    let inv = 1.0 / cols as f32;
+    reduce_sum_avx2(out, x, rows, cols);
+    let mut r = 0usize;
+    while r + LANE_F32 <= rows {
+        let v = _mm256_loadu_ps(out.add(r));
+        _mm256_storeu_ps(out.add(r), _mm256_mul_ps(v, _mm256_set1_ps(inv)));
+        r += LANE_F32;
+    }
+    for rr in r..rows {
+        *out.add(rr) *= inv;
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_reduce_mean(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_mean_avx2(out, x, rows, cols); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { unsafe { reduce_mean_scalar(out, x, rows, cols); } }
+}
+unsafe fn reduce_max_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut m = *x.add(base);
+        for c in 1..cols { let v = *x.add(base + c); if v > m { m = v; } }
+        *out.add(r) = m;
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+unsafe fn reduce_max_avx2(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut acc = _mm256_loadu_ps(x.add(base));
+        let mut c = LANE_F32;
+        while c + LANE_F32 <= cols {
+            acc = _mm256_max_ps(acc, _mm256_loadu_ps(x.add(base + c)));
+            c += LANE_F32;
+        }
+        let mut m = horizontal_max_avx2(acc);
+        for cc in c..cols {
+            let v = *x.add(base + cc);
+            if v > m { m = v; }
+        }
+        *out.add(r) = m;
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_reduce_max(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_max_avx2(out, x, rows, cols); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { unsafe { reduce_max_scalar(out, x, rows, cols); } }
+}
+unsafe fn reduce_min_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut m = *x.add(base);
+        for c in 1..cols { let v = *x.add(base + c); if v < m { m = v; } }
+        *out.add(r) = m;
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+unsafe fn reduce_min_avx2(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut acc = _mm256_loadu_ps(x.add(base));
+        let mut c = LANE_F32;
+        while c + LANE_F32 <= cols {
+            acc = _mm256_min_ps(acc, _mm256_loadu_ps(x.add(base + c)));
+            c += LANE_F32;
+        }
+        let mut m = horizontal_min_avx2(acc);
+        for cc in c..cols {
+            let v = *x.add(base + cc);
+            if v < m { m = v; }
+        }
+        *out.add(r) = m;
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_reduce_min(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { reduce_min_avx2(out, x, rows, cols); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { unsafe { reduce_min_scalar(out, x, rows, cols); } }
+}
+unsafe fn reduce_prod_scalar(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    for r in 0..rows {
+        let base = r * cols;
+        let mut p = 1.0f32;
+        for c in 0..cols { p *= *x.add(base + c); }
+        *out.add(r) = p;
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_reduce_prod(out: *mut f32, x: *const f32, rows: usize, cols: usize) {
+    if rows == 0 || cols == 0 { return; }
+    unsafe { reduce_prod_scalar(out, x, rows, cols); }
+}
+
+// --------------- Equal (80), NotEqual (81), Greater (82), GreaterEqual (83), Less (84), LessEqual (85) ---------------
+// out[i] = (a[i] op b[i]) ? 1.0 : 0.0. Plan: in=a, w=b, count=in_len.
+fn compare_scalar(out: *mut f32, a: *const f32, b: *const f32, count: usize, op: u8) {
+    for i in 0..count {
+        let va = unsafe { *a.add(i) };
+        let vb = unsafe { *b.add(i) };
+        let v = match op {
+            80 => if va == vb { 1.0 } else { 0.0 },
+            81 => if va != vb { 1.0 } else { 0.0 },
+            82 => if va > vb { 1.0 } else { 0.0 },
+            83 => if va >= vb { 1.0 } else { 0.0 },
+            84 => if va < vb { 1.0 } else { 0.0 },
+            85 => if va <= vb { 1.0 } else { 0.0 },
+            _ => 0.0,
+        };
+        unsafe { *out.add(i) = v };
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn compare_avx2(out: *mut f32, a: *const f32, b: *const f32, count: usize, op: u8) {
+    let ones = _mm256_set1_ps(1.0f32);
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let va = _mm256_loadu_ps(a.add(i));
+        let vb = _mm256_loadu_ps(b.add(i));
+        let mask = match op {
+            80 => _mm256_cmp_ps(va, vb, _CMP_EQ_OQ),
+            81 => _mm256_cmp_ps(va, vb, _CMP_NEQ_OQ),
+            82 => _mm256_cmp_ps(va, vb, _CMP_GT_OQ),
+            83 => _mm256_cmp_ps(va, vb, _CMP_GE_OQ),
+            84 => _mm256_cmp_ps(va, vb, _CMP_LT_OQ),
+            85 => _mm256_cmp_ps(va, vb, _CMP_LE_OQ),
+            _ => _mm256_setzero_ps(),
+        };
+        _mm256_storeu_ps(out.add(i), _mm256_and_ps(mask, ones));
+        i += LANE_F32;
+    }
+    compare_scalar(out.add(i), a.add(i), b.add(i), count - i, op);
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_equal(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { compare_avx2(out, a, b, count, 80); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { compare_scalar(out, a, b, count, 80); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_not_equal(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { compare_avx2(out, a, b, count, 81); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { compare_scalar(out, a, b, count, 81); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_greater(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { compare_avx2(out, a, b, count, 82); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { compare_scalar(out, a, b, count, 82); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_greater_equal(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { compare_avx2(out, a, b, count, 83); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { compare_scalar(out, a, b, count, 83); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_less(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { compare_avx2(out, a, b, count, 84); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { compare_scalar(out, a, b, count, 84); }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_less_equal(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { compare_avx2(out, a, b, count, 85); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { compare_scalar(out, a, b, count, 85); }
+}
+
+// --------------- And (90), Or (91), Not (92) ---------------
+// Treat !=0 as true; output 1.0 or 0.0.
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_and(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count {
+        let va = unsafe { *a.add(i) };
+        let vb = unsafe { *b.add(i) };
+        unsafe { *out.add(i) = if va != 0.0 && vb != 0.0 { 1.0 } else { 0.0 } };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_or(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count {
+        let va = unsafe { *a.add(i) };
+        let vb = unsafe { *b.add(i) };
+        unsafe { *out.add(i) = if va != 0.0 || vb != 0.0 { 1.0 } else { 0.0 } };
+    }
+}
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_not(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        unsafe { *out.add(i) = if *x.add(i) != 0.0 { 0.0 } else { 1.0 } };
     }
 }
 
