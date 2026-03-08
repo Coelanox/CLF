@@ -57,6 +57,9 @@ pub enum OpType {
     ReduceMax,
     ReduceMin,
     ReduceProd,
+    // Broadcasting 70–71
+    Broadcast,
+    Expand,
     // Comparisons 80–89
     Equal,
     NotEqual,
@@ -68,6 +71,9 @@ pub enum OpType {
     And,
     Or,
     Not,
+    // Element-wise min/max (93–94; for Clip)
+    Min,
+    Max,
     /// Custom or reserved; op_id 0 or 256+ per agreement.
     Custom(u32),
 }
@@ -119,6 +125,8 @@ pub fn op_type_to_clf_id(op_type: OpType) -> u32 {
         OpType::ReduceMax => 62,
         OpType::ReduceMin => 63,
         OpType::ReduceProd => 64,
+        OpType::Broadcast => 70,
+        OpType::Expand => 71,
         OpType::Equal => 80,
         OpType::NotEqual => 81,
         OpType::Greater => 82,
@@ -128,6 +136,8 @@ pub fn op_type_to_clf_id(op_type: OpType) -> u32 {
         OpType::And => 90,
         OpType::Or => 91,
         OpType::Not => 92,
+        OpType::Min => 93,
+        OpType::Max => 94,
     }
 }
 
@@ -176,6 +186,8 @@ pub fn clf_id_to_op_type(op_id: u32) -> OpType {
         62 => OpType::ReduceMax,
         63 => OpType::ReduceMin,
         64 => OpType::ReduceProd,
+        70 => OpType::Broadcast,
+        71 => OpType::Expand,
         80 => OpType::Equal,
         81 => OpType::NotEqual,
         82 => OpType::Greater,
@@ -185,6 +197,8 @@ pub fn clf_id_to_op_type(op_id: u32) -> OpType {
         90 => OpType::And,
         91 => OpType::Or,
         92 => OpType::Not,
+        93 => OpType::Min,
+        94 => OpType::Max,
         id => OpType::Custom(id),
     }
 }

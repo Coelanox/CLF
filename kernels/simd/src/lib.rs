@@ -19,10 +19,12 @@
 //! |       | 17–19 reserved | 36 | LayerNorm    | 62    | ReduceMax     |
 //! |       |            | 37    | Dropout       | 63    | ReduceMin     |
 //! |       | 26–29 reserved | 38–39 reserved | 64    | ReduceProd    |
+//! |       |            |       |               | 70–71 | Broadcast, Expand |
 //! |       |            |       |               | 80–85 | Equal,NotEqual,Greater,GreaterEqual,Less,LessEqual |
 //! |       |            |       |               | 90    | And           |
 //! |       |            |       |               | 91    | Or            |
 //! |       |            |       |               | 92    | Not           |
+//! |       |            |       |               | 93–94 | Min, Max (element-wise) |
 
 //! For a true no_std / no-OS build: use nightly, `rustup component add rust-src`, and
 //! `cargo build -Z build-std=core,panic_abort --release` with a panic handler.
@@ -803,6 +805,63 @@ pub unsafe extern "C" fn clf_simd_divide(out: *mut f32, a: *const f32, b: *const
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { divide_scalar(out, a, b, count); }
 }
 
+// --------------- Min (93), Max (94): element-wise ---------------
+#[inline(always)]
+fn min_scalar(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count {
+        let va = unsafe { *a.add(i) };
+        let vb = unsafe { *b.add(i) };
+        unsafe { *out.add(i) = va.min(vb) };
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn min_avx2(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let va = _mm256_loadu_ps(a.add(i));
+        let vb = _mm256_loadu_ps(b.add(i));
+        _mm256_storeu_ps(out.add(i), _mm256_min_ps(va, vb));
+        i += LANE_F32;
+    }
+    min_scalar(out.add(i), a.add(i), b.add(i), count - i);
+}
+#[link_section = ".text.clf_simd_min"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_min(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { min_avx2(out, a, b, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { min_scalar(out, a, b, count); }
+}
+
+#[inline(always)]
+fn max_scalar(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    for i in 0..count {
+        let va = unsafe { *a.add(i) };
+        let vb = unsafe { *b.add(i) };
+        unsafe { *out.add(i) = va.max(vb) };
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn max_avx2(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let va = _mm256_loadu_ps(a.add(i));
+        let vb = _mm256_loadu_ps(b.add(i));
+        _mm256_storeu_ps(out.add(i), _mm256_max_ps(va, vb));
+        i += LANE_F32;
+    }
+    max_scalar(out.add(i), a.add(i), b.add(i), count - i);
+}
+#[link_section = ".text.clf_simd_max"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_max(out: *mut f32, a: *const f32, b: *const f32, count: usize) {
+    if count == 0 { return; }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))] { max_avx2(out, a, b, count); }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))] { max_scalar(out, a, b, count); }
+}
+
 // --------------- Sigmoid (11) ---------------
 #[inline(always)]
 fn sigmoid_scalar(out: *mut f32, x: *const f32, count: usize) {
@@ -1379,6 +1438,28 @@ pub unsafe extern "C" fn clf_simd_not(out: *mut f32, x: *const f32, count: usize
     for i in 0..count {
         unsafe { *out.add(i) = if *x.add(i) != 0.0 { 0.0 } else { 1.0 } };
     }
+}
+
+// --------------- Broadcast (70), Expand (71): repeat input to fill output ---------------
+// ABI: out, in, in_len, out_len. out[i] = in[i % in_len]. in_len > 0; out_len can be >= in_len.
+#[inline(always)]
+unsafe fn broadcast_expand_scalar(out: *mut f32, in_ptr: *const f32, in_len: usize, out_len: usize) {
+    if in_len == 0 {
+        return;
+    }
+    for i in 0..out_len {
+        *out.add(i) = *in_ptr.add(i % in_len);
+    }
+}
+#[link_section = ".text.clf_simd_broadcast"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_broadcast(out: *mut f32, in_ptr: *const f32, in_len: usize, out_len: usize) {
+    broadcast_expand_scalar(out, in_ptr, in_len, out_len);
+}
+#[link_section = ".text.clf_simd_expand"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_expand(out: *mut f32, in_ptr: *const f32, in_len: usize, out_len: usize) {
+    broadcast_expand_scalar(out, in_ptr, in_len, out_len);
 }
 
 // =============================================================================

@@ -67,11 +67,13 @@ This document is the **single source of truth** for op_ids. All producers and th
 | 90    | And                    | Logical     |
 | 91    | Or                     | Logical     |
 | 92    | Not                    | Logical     |
-| 93–99 | (reserved)             | Logical     |
+| 93    | Min (element-wise)     | Elementwise |
+| 94    | Max (element-wise)     | Elementwise |
+| 95–99 | (reserved)             | —           |
 | 100–255 | Reserved (future canonical) | —        |
 | 256–2³²−1 | **Custom** (producer-defined) | —     |
 
-**CLFC blobs:** Each blob is standalone and keyed by op_id. Ops in range **0–51**: 0=unknown, 1–4=Add,Subtract,Multiply,Divide, 10–16=Relu,Sigmoid,Tanh,Softmax,LogSoftmax,Gelu,Swish, 20–25=Sqrt,Pow,Cos,Sin,Exp,Log, 30–37=Conv,MaxPool,AvgPool,GlobalMaxPool,GlobalAvgPool,BatchNorm,LayerNorm,Dropout, 40–47=Reshape,Transpose,Permute,Concatenate,Split,Slice,Gather,Scatter, 50–51=MatMul,Gemm. **52+**: 60–64=ReduceSum/Mean/Max/Min/Prod, 80–85=Equal,NotEqual,Greater,GreaterEqual,Less,LessEqual, 90–92=And,Or,Not. **49 canonical op_ids** total.
+**CLFC blobs:** Each blob is standalone and keyed by op_id. Ops in range **0–51**: 0=unknown, 1–4=Add,Subtract,Multiply,Divide, 10–16=Relu,Sigmoid,Tanh,Softmax,LogSoftmax,Gelu,Swish, 20–25=Sqrt,Pow,Cos,Sin,Exp,Log, 30–37=Conv,MaxPool,AvgPool,GlobalMaxPool,GlobalAvgPool,BatchNorm,LayerNorm,Dropout, 40–47=Reshape,Transpose,Permute,Concatenate,Split,Slice,Gather,Scatter, 50–51=MatMul,Gemm. **52+**: 60–64=ReduceSum/Mean/Max/Min/Prod, 80–85=Equal,NotEqual,Greater,GreaterEqual,Less,LessEqual, 90–92=And,Or,Not, 93–94=Min,Max. **51 canonical op_ids** total.
 
 **Usage:**
 
