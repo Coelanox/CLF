@@ -23,6 +23,8 @@ pub enum OpType {
     LogSoftmax,
     Gelu,
     Swish,
+    /// Element-wise |x| on f32 (canonical op_id **19**).
+    Abs,
     // Math 20–29
     Sqrt,
     Pow,
@@ -96,6 +98,7 @@ pub fn op_type_to_clf_id(op_type: OpType) -> u32 {
         OpType::LogSoftmax => 14,
         OpType::Gelu => 15,
         OpType::Swish => 16,
+        OpType::Abs => 19,
         OpType::Sqrt => 20,
         OpType::Pow => 21,
         OpType::Cos => 22,
@@ -157,6 +160,7 @@ pub fn clf_id_to_op_type(op_id: u32) -> OpType {
         14 => OpType::LogSoftmax,
         15 => OpType::Gelu,
         16 => OpType::Swish,
+        19 => OpType::Abs,
         20 => OpType::Sqrt,
         21 => OpType::Pow,
         22 => OpType::Cos,

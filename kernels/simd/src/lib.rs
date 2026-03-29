@@ -16,7 +16,7 @@
 //! | 14    | LogSoftmax | 33    | GlobalMaxPool | 51    | Gemm          |
 //! | 15    | Gelu       | 34    | GlobalAvgPool | 60    | ReduceSum     |
 //! | 16    | Swish      | 35    | BatchNorm     | 61    | ReduceMean    |
-//! |       | 17–19 reserved | 36 | LayerNorm    | 62    | ReduceMax     |
+//! | 19    | Abs        | 36    | LayerNorm     | 62    | ReduceMax     |
 //! |       |            | 37    | Dropout       | 63    | ReduceMin     |
 //! |       | 26–29 reserved | 38–39 reserved | 64    | ReduceProd    |
 //! |       |            |       |               | 70–71 | Broadcast, Expand |
@@ -729,7 +729,7 @@ pub unsafe extern "C" fn clf_simd_gemm(
 }
 
 // =============================================================================
-// Remaining canonical op_ids (2–4, 11–16, 20–25, 31–33, 37, 42–47, 60–64, 80–85, 90–92)
+// Remaining canonical op_ids (2–4, 11–16, 19, 20–25, 31–33, 37, 42–47, 60–64, 80–85, 90–92)
 // =============================================================================
 
 // --------------- Subtract (2) ---------------
@@ -943,7 +943,45 @@ pub unsafe extern "C" fn clf_simd_swish(out: *mut f32, x: *const f32, count: usi
     swish_scalar(out, x, count);
 }
 
-// --------------- Sqrt (20), Pow (21), Cos (22), Sin (23), Exp (24), Log (25) ---------------
+// --------------- Abs (19), Sqrt (20), Pow (21), Cos (22), Sin (23), Exp (24), Log (25) ---------------
+#[inline(always)]
+fn abs_scalar(out: *mut f32, x: *const f32, count: usize) {
+    for i in 0..count {
+        let v = unsafe { *x.add(i) };
+        unsafe { *out.add(i) = v.abs() };
+    }
+}
+#[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+#[inline(always)]
+unsafe fn abs_avx2(out: *mut f32, x: *const f32, count: usize) {
+    // Clear sign bit per lane (IEEE-754 float: same as fabs).
+    // Per-lane mask with sign bit cleared (IEEE-754 f32; same as 0x7FFFFFFF).
+    let sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFF_FFFF_u32 as i32));
+    let mut i = 0usize;
+    while i + LANE_F32 <= count {
+        let v = _mm256_loadu_ps(x.add(i));
+        _mm256_storeu_ps(out.add(i), _mm256_and_ps(v, sign_mask));
+        i += LANE_F32;
+    }
+    abs_scalar(out.add(i), x.add(i), count - i);
+}
+/// Abs: out[i] = |x[i]|. f32.
+/// ABI: out (mut), x (in), count (elements). Same as Sqrt (unary element-wise).
+#[no_mangle]
+pub unsafe extern "C" fn clf_simd_abs(out: *mut f32, x: *const f32, count: usize) {
+    if count == 0 {
+        return;
+    }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+    {
+        abs_avx2(out, x, count);
+    }
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
+    {
+        abs_scalar(out, x, count);
+    }
+}
+
 #[inline(always)]
 fn sqrt_scalar(out: *mut f32, x: *const f32, count: usize) {
     for i in 0..count {
@@ -1489,6 +1527,26 @@ pub unsafe extern "C" fn clf_abi6_add(
     add_scalar(output_ptr, input_ptr, weights_ptr, in_len);
 }
 
+/// CLFE 6-arg entry for Abs (op_id 19). Plan: in=input_ptr, out=output_ptr, count=in_len; out_len/w_len unused (unary).
+#[link_section = ".text.clf_abi6_abs"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_abi6_abs(
+    input_ptr: *const f32,
+    output_ptr: *mut f32,
+    _weights_ptr: *const f32,
+    in_len: usize,
+    _out_len: usize,
+    _w_len: usize,
+) {
+    if in_len == 0 {
+        return;
+    }
+    #[cfg(all(target_arch = "x86_64", feature = "avx2"))]
+    abs_avx2(output_ptr, input_ptr, in_len);
+    #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
+    abs_scalar(output_ptr, input_ptr, in_len);
+}
+
 /// CLFE 6-arg entry for ReLU. Plan: in=input_ptr, out=output_ptr, count=in_len. Weights unused.
 #[link_section = ".text.clf_abi6_relu"]
 #[no_mangle]
@@ -1675,4 +1733,72 @@ pub unsafe extern "C" fn clf_abi6_matmul(
     matmul_avx2(output_ptr, input_ptr, weights_ptr, m, k, n);
     #[cfg(not(all(target_arch = "x86_64", feature = "avx2")))]
     matmul_scalar(output_ptr, input_ptr, weights_ptr, m, k, n);
+}
+
+/// CLFE 6-arg entry for Broadcast (op_id 70). Plan: in=input_ptr, out=output_ptr, in_len, out_len; weights unused.
+#[link_section = ".text.clf_abi6_broadcast"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_abi6_broadcast(
+    input_ptr: *const f32,
+    output_ptr: *mut f32,
+    _weights_ptr: *const f32,
+    in_len: usize,
+    out_len: usize,
+    _w_len: usize,
+) {
+    if out_len == 0 {
+        return;
+    }
+    clf_simd_broadcast(output_ptr, input_ptr, in_len, out_len);
+}
+
+/// CLFE 6-arg entry for Expand (op_id 71). Plan: in=input_ptr, out=output_ptr, in_len, out_len; weights unused.
+#[link_section = ".text.clf_abi6_expand"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_abi6_expand(
+    input_ptr: *const f32,
+    output_ptr: *mut f32,
+    _weights_ptr: *const f32,
+    in_len: usize,
+    out_len: usize,
+    _w_len: usize,
+) {
+    if out_len == 0 {
+        return;
+    }
+    clf_simd_expand(output_ptr, input_ptr, in_len, out_len);
+}
+
+/// CLFE 6-arg entry for Min (op_id 93). Plan: first operand = input_ptr, second = weights_ptr, count = in_len.
+#[link_section = ".text.clf_abi6_min"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_abi6_min(
+    input_ptr: *const f32,
+    output_ptr: *mut f32,
+    weights_ptr: *const f32,
+    in_len: usize,
+    _out_len: usize,
+    _w_len: usize,
+) {
+    if in_len == 0 {
+        return;
+    }
+    clf_simd_min(output_ptr, input_ptr, weights_ptr, in_len);
+}
+
+/// CLFE 6-arg entry for Max (op_id 94). Plan: first operand = input_ptr, second = weights_ptr, count = in_len.
+#[link_section = ".text.clf_abi6_max"]
+#[no_mangle]
+pub unsafe extern "C" fn clf_abi6_max(
+    input_ptr: *const f32,
+    output_ptr: *mut f32,
+    weights_ptr: *const f32,
+    in_len: usize,
+    _out_len: usize,
+    _w_len: usize,
+) {
+    if in_len == 0 {
+        return;
+    }
+    clf_simd_max(output_ptr, input_ptr, weights_ptr, in_len);
 }
