@@ -3,6 +3,9 @@
 //! Defines header layout, manifest entries, and magic/signature constants
 //! for the Coelanox Library File (.clf) format. All multi-byte fields are little-endian.
 
+use std::fmt;
+use std::str::FromStr;
+
 /// Magic bytes at the start of every CLF file: "CLF1".
 pub const CLF_MAGIC: [u8; 4] = [0x43, 0x4C, 0x46, 0x31];
 
@@ -13,6 +16,8 @@ pub const CLF_VERSION: u8 = 2;
 
 /// CLF file kind: role of the file in the Coelanox ecosystem.
 /// Used for discovery and routing via extensions (.clfc, .clfmm, .clfmp, .clfe).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClfKind {
@@ -53,6 +58,34 @@ impl ClfKind {
     }
 }
 
+impl fmt::Display for ClfKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ClfKind::Compute => "compute",
+            ClfKind::MemoryMovement => "memory-movement",
+            ClfKind::MemoryProtection => "memory-protection",
+            ClfKind::Executor => "executor",
+        };
+        f.write_str(s)
+    }
+}
+
+impl FromStr for ClfKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "compute" | "c" | "clfc" => Ok(Self::Compute),
+            "memory-movement" | "memorymovement" | "mm" | "clfmm" => Ok(Self::MemoryMovement),
+            "memory-protection" | "memoryprotection" | "mp" | "clfmp" => Ok(Self::MemoryProtection),
+            "executor" | "e" | "clfe" => Ok(Self::Executor),
+            _ => Err(format!(
+                "unknown kind {s:?} (expected compute, memory-movement, memory-protection, executor)"
+            )),
+        }
+    }
+}
+
 /// Signature magic at end of file when signature is present: "SIG0".
 pub const SIG_MAGIC: [u8; 4] = [0x53, 0x49, 0x47, 0x30];
 
@@ -69,6 +102,7 @@ pub const BLOB_ALIGN_NONE: u8 = 0;
 pub const BLOB_ALIGN_CODE: u8 = 16;
 
 /// Parsed CLF header (after reading magic, version, vendor, target, alignment, kind).
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ClfHeader {
     /// Format version (must be <= supported version).
@@ -82,17 +116,19 @@ pub struct ClfHeader {
     /// File kind (Compute / MemoryMovement / MemoryProtection). v1: defaults to Compute; v2: read from header.
     pub kind: ClfKind,
     /// Byte offset in file where header ends (start of manifest).
+    #[cfg_attr(feature = "serde", serde(skip_serializing))]
     pub header_end: u64,
 }
 
 /// Single manifest entry: op_id → (offset, size) into blob store.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct ManifestEntry {
     /// Canonical op identifier (see op_registry / docs/op_ids.md).
     pub op_id: u32,
     /// Offset from start of blob store, in bytes.
     pub offset: u32,
-    /// Blob length in bytes.
+    /// Stored length in the blob store (includes tail padding when alignment is used).
     pub size: u32,
 }
 

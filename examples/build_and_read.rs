@@ -4,7 +4,7 @@
 
 use std::io::Cursor;
 
-use clf::{pack_clf, ClfKind, ClfReader, PackOptions};
+use clf::{pack_clf, ClfReader, PackOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let entries: Vec<(u32, Vec<u8>)> = vec![
@@ -13,11 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let options = PackOptions {
         vendor: "example".to_string(),
-        target: String::new(),
-        blob_alignment: 0,
-        kind: ClfKind::Compute,
-        version: clf::CLF_VERSION,
-        sign: false,
+        ..PackOptions::default()
     };
 
     let mut buf = Cursor::new(Vec::new());

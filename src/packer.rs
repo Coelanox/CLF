@@ -22,6 +22,22 @@ pub enum PackError {
     TargetTooLong,
 }
 
+/// Parse one CLI token `op_id:path` (first `:` separates id from path; path may be relative or absolute).
+pub fn parse_op_blob_arg(arg: &str) -> Result<(u32, String), String> {
+    let mut it = arg.splitn(2, ':');
+    let id_str = it.next().unwrap_or("");
+    let path = it
+        .next()
+        .ok_or_else(|| format!("expected OP_ID:PATH, got {arg:?}"))?;
+    if path.is_empty() {
+        return Err(format!("empty path in {arg:?}"));
+    }
+    let op_id: u32 = id_str
+        .parse()
+        .map_err(|_| format!("invalid op_id in {arg:?} (expected u32)"))?;
+    Ok((op_id, path.to_string()))
+}
+
 /// Options for building a .clf file.
 #[derive(Debug, Clone)]
 pub struct PackOptions {
@@ -100,17 +116,18 @@ pub fn pack_clf<W: Write + Seek>(
         out.write_all(&[options.kind as u8])?;
     }
 
-    // --- Manifest: num_entries (4 B) + entries (12 B each). Size in manifest = stored size (after padding). ---
+    // --- Manifest: num_entries (4 B) + entries (12 B each). Size = stored length in blob store (includes padding per SPEC). ---
     let num_entries = entries.len() as u32;
     out.write_all(&num_entries.to_le_bytes())?;
 
     let mut offset: u32 = 0;
     for (op_id, blob) in entries {
         let unpadded = blob.len() as u32;
-        let padded_size = (unpadded + align - 1) / align * align;
+        // Next multiple of `align` in the blob store (not `unpadded.div_ceil(align)`, which is ceil(unpadded/align)).
+        let padded_size = unpadded.next_multiple_of(align);
         out.write_all(&op_id.to_le_bytes())?;
         out.write_all(&offset.to_le_bytes())?;
-        out.write_all(&unpadded.to_le_bytes())?; // reader gets exact blob; offset advance uses padded_size
+        out.write_all(&padded_size.to_le_bytes())?;
         offset = offset.saturating_add(padded_size);
     }
 

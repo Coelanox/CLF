@@ -1,0 +1,12 @@
+# Example pack manifest for coelanox-packer --from
+vendor = "fixture-vendor"
+target = "CPU"
+kind = "compute"
+align = 0
+sign = false
+
+[[blobs]]
+op_id = 1
+path = "blob1.bin"
+symbol = "_kernel_add"
+notes = "golden test placeholder — paths resolved relative to manifest file by the packer"

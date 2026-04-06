@@ -26,7 +26,7 @@ CLF is the standard binary format for shipping pre-compiled hardware kernels in 
 **This repo provides:**
 
 - **Reader** (Rust): `ClfReader::open(path)`, `get_blob(op_id)`, `build_code_section(op_ids, MissingOpIdPolicy)` (Fail or Skip when op_id missing), optional `verify_signature()` before use. Header includes `target` and `blob_alignment` for packager matching and layout.
-- **Packer** (Rust): `coelanox-packer` CLI (`--target`, `--align`, `--sign`) and `pack_clf` / `append_signature` library API. Open source so producers can audit it.
+- **Packer** (Rust): **`clf`** CLI (same program as `coelanox-packer`; pack with **`--from`** TOML manifest, **`--dry-run`**, **`--verify`**, **`--inspect --json`**, **`--write-sidecar`**) and `pack_clf` / `append_signature` / `parse_op_blob_arg` / `load_pack_manifest` / sidecar helpers. Open source so producers can audit it.
 - **Op ID registry**: `op_type_to_clf_id(OpType)`, `clf_id_to_op_type(op_id)` and canonical op_id list in code and docs/op_ids.md (custom range 256–u32::MAX).
 
-Build: `cargo build`. Tests: `cargo test`. Pack a .clf: `cargo run --bin coelanox-packer -- --output out.clf 1:blob1.bin 50:blob50.bin`.
+Build: `cargo build` (MSRV in `Cargo.toml` `rust-version`). Tests: `cargo test`. Pack: `cargo run --bin clf -- -o out.clf 1:blob1.bin 50:blob50.bin` (or `--bin coelanox-packer`). After `cargo install clf`, use the `clf` command on your `PATH`. Inspect: `clf -i out.clf`. Verify SIG0: `clf --verify out.clf`. Optional TOML manifest and JSON sidecar: [docs/PRODUCER_GUIDE.md](docs/PRODUCER_GUIDE.md). Fuzzing: `cd fuzz && cargo fuzz run clf_open` (requires [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)). Changelog: [CHANGELOG.md](CHANGELOG.md). Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

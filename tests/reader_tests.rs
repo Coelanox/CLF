@@ -61,7 +61,11 @@ fn reader_invalid_magic() {
         Ok(_) => panic!("expected invalid magic error"),
         Err(e) => {
             let msg = e.to_string();
-            assert!(msg.contains("magic") || msg.contains("CLF1"), "expected invalid magic: {}", msg);
+            assert!(
+                msg.contains("magic") || msg.contains("CLF1"),
+                "expected invalid magic: {}",
+                msg
+            );
         }
     }
 }
@@ -74,8 +78,8 @@ fn reader_truncated_file() {
     file.write_all(&[1u8]).unwrap();
     file.write_all(&0u32.to_le_bytes()).unwrap(); // vendor len 0
     file.write_all(&0u32.to_le_bytes()).unwrap(); // target len 0
-    file.write_all(&[0u8]).unwrap();               // blob align 0
-    // No manifest (num_entries) → read_exact will fail
+    file.write_all(&[0u8]).unwrap(); // blob align 0
+                                     // No manifest (num_entries) → read_exact will fail
     file.flush().unwrap();
 
     match ClfReader::open(file.path()) {
@@ -149,8 +153,8 @@ fn reader_expected_kind_mismatch() {
     file.write_all(&bytes).unwrap();
     file.flush().unwrap();
 
-    let err = ClfReader::open_with_expected_kind(file.path(), Some(ClfKind::MemoryMovement))
-        .unwrap_err();
+    let err =
+        ClfReader::open_with_expected_kind(file.path(), Some(ClfKind::MemoryMovement)).unwrap_err();
     assert!(err.to_string().contains("mismatch") || err.to_string().contains("Kind"));
 }
 
@@ -174,8 +178,8 @@ fn reader_expected_kind_matches() {
     file.write_all(&bytes).unwrap();
     file.flush().unwrap();
 
-    let reader = ClfReader::open_with_expected_kind(file.path(), Some(ClfKind::MemoryProtection))
-        .unwrap();
+    let reader =
+        ClfReader::open_with_expected_kind(file.path(), Some(ClfKind::MemoryProtection)).unwrap();
     assert_eq!(reader.header.kind, ClfKind::MemoryProtection);
 }
 
@@ -222,4 +226,25 @@ fn reader_build_code_section_skip_missing() {
         .build_code_section(&op_ids, MissingOpIdPolicy::Skip)
         .unwrap();
     assert_eq!(code, b"a");
+}
+
+/// `blobs_iter` matches manifest order and blob bytes.
+#[test]
+fn reader_blobs_iter_matches_get_blob() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(2, b"bb".to_vec()), (1, b"a".to_vec())];
+    let options = PackOptions::default();
+    let mut buf = Cursor::new(Vec::new());
+    pack_clf(&mut buf, &entries, &options).unwrap();
+    let bytes = buf.into_inner();
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let mut reader = ClfReader::open(file.path()).unwrap();
+    let from_iter: Vec<_> = reader.blobs_iter().map(|r| r.unwrap()).collect();
+    assert_eq!(from_iter.len(), 2);
+    assert_eq!(from_iter[0].0, 1);
+    assert_eq!(from_iter[0].1, b"a");
+    assert_eq!(from_iter[1].0, 2);
+    assert_eq!(from_iter[1].1, b"bb");
 }

@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::format::{
-    ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_HASH_LEN, SIG_MAGIC,
+    ClfHeader, ClfKind, ManifestEntry, CLF_MAGIC, CLF_VERSION, SIG_BLOCK_LEN, SIG_HASH_LEN,
+    SIG_MAGIC,
 };
 
 /// Policy when an op_id required by the model is not present in the CLF.
@@ -58,6 +59,8 @@ pub struct ClfReader {
     blob_store_offset: u64,
     /// Total length of blob store (so we can bounds-check reads).
     blob_store_len: u64,
+    /// True if a SIG0 block is present at end of file (not verified until `verify_signature`).
+    signature_block_present: bool,
     /// If true, file has a valid signature block at end (verified by verify_signature).
     signature_verified: bool,
 }
@@ -156,7 +159,11 @@ impl ClfReader {
             let op_id = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
             let offset = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
             let size = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
-            let entry = ManifestEntry { op_id, offset, size };
+            let entry = ManifestEntry {
+                op_id,
+                offset,
+                size,
+            };
             manifest.insert(op_id, entry);
         }
 
@@ -164,14 +171,15 @@ impl ClfReader {
 
         // Compute blob store length: either from file size minus optional signature, or from max(offset+size).
         let file_len = reader.seek(SeekFrom::End(0))?;
-        let has_sig = file_len >= (SIG_BLOCK_LEN as u64)
-            && {
-                reader.seek(SeekFrom::End(-(SIG_BLOCK_LEN as i64)))?;
-                let mut sig_magic = [0u8; 4];
-                reader.read_exact(&mut sig_magic).is_ok() && sig_magic == SIG_MAGIC
-            };
+        let has_sig = file_len >= (SIG_BLOCK_LEN as u64) && {
+            reader.seek(SeekFrom::End(-(SIG_BLOCK_LEN as i64)))?;
+            let mut sig_magic = [0u8; 4];
+            reader.read_exact(&mut sig_magic).is_ok() && sig_magic == SIG_MAGIC
+        };
         let blob_store_len = if has_sig {
-            file_len.saturating_sub(SIG_BLOCK_LEN as u64).saturating_sub(blob_store_offset)
+            file_len
+                .saturating_sub(SIG_BLOCK_LEN as u64)
+                .saturating_sub(blob_store_offset)
         } else {
             file_len.saturating_sub(blob_store_offset)
         };
@@ -185,8 +193,35 @@ impl ClfReader {
             reader,
             blob_store_offset,
             blob_store_len,
+            signature_block_present: has_sig,
             signature_verified: false,
         })
+    }
+
+    /// Byte offset in the file where the blob store begins.
+    #[must_use]
+    pub fn blob_store_offset(&self) -> u64 {
+        self.blob_store_offset
+    }
+
+    /// Length of the blob store region (excluding an optional trailing signature block).
+    #[must_use]
+    pub fn blob_store_len(&self) -> u64 {
+        self.blob_store_len
+    }
+
+    /// Whether a SIG0 + hash block is present at the end of the file (hash not verified).
+    #[must_use]
+    pub fn signature_block_present(&self) -> bool {
+        self.signature_block_present
+    }
+
+    /// Manifest entries sorted by `op_id` (stable order for display and tooling).
+    #[must_use]
+    pub fn manifest_entries(&self) -> Vec<ManifestEntry> {
+        let mut v: Vec<ManifestEntry> = self.manifest.values().copied().collect();
+        v.sort_unstable_by_key(|e| e.op_id);
+        v
     }
 
     /// Return the blob for the given op_id if present. No interpretation of blob contents.
@@ -284,6 +319,37 @@ impl ClfReader {
         }
         Ok(out)
     }
+
+    /// Iterate blobs in manifest order (sorted by `op_id`).
+    pub fn blobs_iter(&mut self) -> BlobIter<'_> {
+        let entries = self.manifest_entries().into_iter();
+        BlobIter {
+            reader: self,
+            entries,
+        }
+    }
+}
+
+/// Iterator over `(op_id, blob bytes)` in manifest order (by `op_id`).
+pub struct BlobIter<'a> {
+    reader: &'a mut ClfReader,
+    entries: std::vec::IntoIter<ManifestEntry>,
+}
+
+impl<'a> Iterator for BlobIter<'a> {
+    type Item = Result<(u32, Vec<u8>), ClfError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let e = self.entries.next()?;
+        Some(match self.reader.get_blob(e.op_id) {
+            Ok(Some(b)) => Ok((e.op_id, b)),
+            Ok(None) => Err(ClfError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "internal: manifest entry not found",
+            ))),
+            Err(err) => Err(err),
+        })
+    }
 }
 
 /// CLF reader that reads from bytes (e.g. container-embedded CLFMM).
@@ -294,6 +360,7 @@ pub struct ClfReaderFromBytes {
     data: Vec<u8>,
     blob_store_offset: u64,
     blob_store_len: u64,
+    signature_block_present: bool,
 }
 
 impl ClfReaderFromBytes {
@@ -338,10 +405,20 @@ impl ClfReaderFromBytes {
             ClfKind::default_for_v1()
         };
         let header_end = cursor.stream_position()?;
-        let header = ClfHeader { version, vendor, target, blob_alignment, kind, header_end };
+        let header = ClfHeader {
+            version,
+            vendor,
+            target,
+            blob_alignment,
+            kind,
+            header_end,
+        };
         if let Some(expected) = expected_kind {
             if header.kind != expected {
-                return Err(ClfError::KindMismatch { expected, actual: header.kind });
+                return Err(ClfError::KindMismatch {
+                    expected,
+                    actual: header.kind,
+                });
             }
         }
         let mut num_entries_buf = [0u8; 4];
@@ -354,7 +431,14 @@ impl ClfReaderFromBytes {
             let op_id = u32::from_le_bytes(entry_buf[0..4].try_into().unwrap());
             let offset = u32::from_le_bytes(entry_buf[4..8].try_into().unwrap());
             let size = u32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
-            manifest.insert(op_id, ManifestEntry { op_id, offset, size });
+            manifest.insert(
+                op_id,
+                ManifestEntry {
+                    op_id,
+                    offset,
+                    size,
+                },
+            );
         }
         let blob_store_offset = cursor.stream_position()?;
         let data_len = data.len() as u64;
@@ -362,7 +446,9 @@ impl ClfReaderFromBytes {
             && data.len() >= SIG_BLOCK_LEN
             && data[data.len() - SIG_BLOCK_LEN..data.len() - SIG_HASH_LEN] == SIG_MAGIC;
         let blob_store_len = if has_sig {
-            data_len.saturating_sub(SIG_BLOCK_LEN as u64).saturating_sub(blob_store_offset)
+            data_len
+                .saturating_sub(SIG_BLOCK_LEN as u64)
+                .saturating_sub(blob_store_offset)
         } else {
             data_len.saturating_sub(blob_store_offset)
         };
@@ -372,7 +458,30 @@ impl ClfReaderFromBytes {
             data: data.to_vec(),
             blob_store_offset,
             blob_store_len,
+            signature_block_present: has_sig,
         })
+    }
+
+    #[must_use]
+    pub fn blob_store_offset(&self) -> u64 {
+        self.blob_store_offset
+    }
+
+    #[must_use]
+    pub fn blob_store_len(&self) -> u64 {
+        self.blob_store_len
+    }
+
+    #[must_use]
+    pub fn signature_block_present(&self) -> bool {
+        self.signature_block_present
+    }
+
+    #[must_use]
+    pub fn manifest_entries(&self) -> Vec<ManifestEntry> {
+        let mut v: Vec<ManifestEntry> = self.manifest.values().copied().collect();
+        v.sort_unstable_by_key(|e| e.op_id);
+        v
     }
 
     /// Get blob for op_id.
@@ -383,12 +492,43 @@ impl ClfReaderFromBytes {
         };
         let start = (self.blob_store_offset + u64::from(entry.offset)) as usize;
         let end = start + entry.size as usize;
-        if end > self.data.len() {
+        let blob_store_end = self.blob_store_offset as usize + self.blob_store_len as usize;
+        if end > blob_store_end || end > self.data.len() {
             return Err(ClfError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "manifest entry extends past blob store",
             )));
         }
         Ok(Some(self.data[start..end].to_vec()))
+    }
+
+    /// Iterate blobs in manifest order (sorted by `op_id`).
+    pub fn blobs_iter(&self) -> BlobIterFromBytes<'_> {
+        BlobIterFromBytes {
+            reader: self,
+            entries: self.manifest_entries().into_iter(),
+        }
+    }
+}
+
+/// Iterator over `(op_id, blob bytes)` for an in-memory CLF.
+pub struct BlobIterFromBytes<'a> {
+    reader: &'a ClfReaderFromBytes,
+    entries: std::vec::IntoIter<ManifestEntry>,
+}
+
+impl<'a> Iterator for BlobIterFromBytes<'a> {
+    type Item = Result<(u32, Vec<u8>), ClfError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let e = self.entries.next()?;
+        Some(match self.reader.get_blob(e.op_id) {
+            Ok(Some(b)) => Ok((e.op_id, b)),
+            Ok(None) => Err(ClfError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "internal: manifest entry not found",
+            ))),
+            Err(err) => Err(err),
+        })
     }
 }

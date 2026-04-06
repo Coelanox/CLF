@@ -2,7 +2,7 @@
 
 use std::io::{Cursor, Write};
 
-use clf::{append_signature, pack_clf, ClfKind, ClfReader, PackOptions};
+use clf::{append_signature, pack_clf, parse_op_blob_arg, ClfKind, ClfReader, PackOptions};
 
 /// Produce a .clf in memory (two blobs), then read it back with ClfReader and verify blobs.
 #[test]
@@ -115,4 +115,16 @@ fn packer_blob_alignment() {
     let blob = reader.get_blob(1).unwrap().unwrap();
     assert_eq!(blob.len(), 16); // padded to 16
     assert_eq!(&blob[..2], &[0x01, 0x02]);
+}
+
+#[test]
+fn parse_op_blob_arg_splits_first_colon_only() {
+    let (id, path) = parse_op_blob_arg("10:/tmp/foo/bar.bin").unwrap();
+    assert_eq!(id, 10);
+    assert_eq!(path, "/tmp/foo/bar.bin");
+}
+
+#[test]
+fn parse_op_blob_arg_rejects_missing_colon() {
+    assert!(parse_op_blob_arg("nope").is_err());
 }
