@@ -47,7 +47,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build CLI binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin clf
+        run: cargo build --release --target ${{ matrix.target }} --bin clf
 
       - name: Package Linux archive
         if: runner.os == 'Linux'
