@@ -132,7 +132,7 @@ Consumers should validate that the file’s Kind byte matches the expected kind 
 |------|----------------|------------------|
 | **op_id** | u32 (0–2³²−1) | Billions of distinct op_ids; canonical uses 0–255, custom 256–2³²−1. |
 | **Manifest entries** | u32 (num_entries) | Billions of blobs per .clf. |
-| **Vendor / target length** | u32 each | Max 2³²−1 bytes per string. |
+| **Vendor / target length** | u32 each | On-wire max 2³²−1 bytes; current reference reader enforces 64 KiB cap per field as a safety bound. |
 | **Blob offset / size** | u32 each | Max ~4 GiB per blob; blob store can be very large. Sufficient for any single kernel. |
 | **Format version** | u8 | 256 versions; new layout = new version. |
 | **Blob alignment** | u8 (0–255) | Alignment in bytes; 16–64 covers all common ISAs. |
@@ -144,6 +144,7 @@ Consumers should validate that the file’s Kind byte matches the expected kind 
 - **Reserved / extension:** Spec allows future header fields and trailer extensions (e.g. new signature scheme, key ID, attestation) in new versions.
 - **Op_id stability:** Canonical op_ids are stable; new ops get new ids. Custom range 256–u32::MAX avoids collision with future canonical ids.
 - **Signature:** v1 = hash-only; verification keys / PKI reserved for future (e.g. v2 optional key ID or cert after the hash).
+- **Security profile (current reader):** Although header string fields are encoded as u32 length on disk, the current reference reader enforces a defensive cap of **64 KiB** each for `vendor` and `target` to bound allocations when opening untrusted files.
 
 ### 4.3 If limits are ever hit
 

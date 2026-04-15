@@ -25,6 +25,7 @@ pub use op_registry::{clf_id_to_op_type, op_type_to_clf_id, OpType};
 pub use packer::{append_signature, pack_clf, parse_op_blob_arg, PackError, PackOptions};
 pub use reader::{
     BlobIter, BlobIterFromBytes, ClfError, ClfReader, ClfReaderFromBytes, MissingOpIdPolicy,
+    VerificationPolicy,
 };
 
 #[cfg(feature = "serde")]

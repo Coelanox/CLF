@@ -52,6 +52,8 @@ Run `clf --help` (or `coelanox-packer --help`) for the full option list and exam
 **Verify only:**
 
 - `--verify <FILE>` — Exit with status 0 if a SIG0 block is present and the SHA-256 matches; non-zero otherwise. Useful in pipelines.
+- `--verify-policy <integrity-only|require-authenticity>` — Applies to `--verify`, or `--inspect` when used with `--verify-signature`. `require-authenticity` is reserved for future authenticated signatures and currently fails closed with an explicit unsupported error.
+- Recommended today: `--verify-policy integrity-only` for explicit CI intent.
 
 **Arguments (pack):** Each `op_id:path` gives one op_id and the path to the raw blob (or object file). Example:
 
@@ -61,6 +63,28 @@ coelanox-packer --output gpu.clf --target GPU --align 16 --sign \
 ```
 
 The tool reads each file as a raw blob and writes header + manifest + blob store (+ optional signature) to `gpu.clf`.
+
+## Installing `clf` for vendor workflows
+
+For non-Rust environments, use release binaries with installer scripts:
+
+- Linux: `bash scripts/install.sh`
+- Windows: `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1`
+
+Defaults:
+- repo: `Coelanox/CLF`
+- version: `latest`
+- install dir:
+  - Linux: `~/.local/bin`
+  - Windows: `%USERPROFILE%\.local\bin`
+
+You can override repo/version/install-dir with `CLF_REPO`, `CLF_VERSION`, `CLF_INSTALL_DIR`.
+
+Release assets expected by the scripts:
+- `clf-x86_64-unknown-linux-gnu.tar.gz` (optional arm64 variant: `clf-aarch64-unknown-linux-gnu.tar.gz`)
+- `clf-x86_64-pc-windows-msvc.zip` (optional arm64 variant: `clf-aarch64-pc-windows-msvc.zip`)
+
+Release automation details: [RELEASE.md](RELEASE.md).
 
 ## TOML pack manifest (`--from`)
 
@@ -106,6 +130,10 @@ Use the canonical [op_id registry](op_ids.md). For custom ops, use op_ids in **2
 ## Signing (optional)
 
 If you use `--sign`, the packer appends a 36-byte block (SIG0 + SHA-256). Consumers can call `verify_signature()` before use. Verification keys / PKI are reserved for future; in v1, verification is “hash matches.”
+
+## Security bounds
+
+The reference reader applies defensive resource bounds when parsing untrusted files. In particular, `vendor` and `target` header fields are currently capped at **64 KiB** each, even though the on-wire field lengths are encoded as u32.
 
 ## Library API
 

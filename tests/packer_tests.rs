@@ -2,7 +2,10 @@
 
 use std::io::{Cursor, Write};
 
-use clf::{append_signature, pack_clf, parse_op_blob_arg, ClfKind, ClfReader, PackOptions};
+use clf::{
+    append_signature, pack_clf, parse_op_blob_arg, ClfKind, ClfReader, PackOptions,
+    VerificationPolicy,
+};
 
 /// Produce a .clf in memory (two blobs), then read it back with ClfReader and verify blobs.
 #[test]
@@ -127,4 +130,55 @@ fn parse_op_blob_arg_splits_first_colon_only() {
 #[test]
 fn parse_op_blob_arg_rejects_missing_colon() {
     assert!(parse_op_blob_arg("nope").is_err());
+}
+
+#[test]
+fn verify_with_policy_integrity_only_succeeds_for_signed_clf() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(10, b"relu_kernel".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::Compute,
+        version: 1,
+        sign: true,
+    };
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    let data_len = pack_clf(&mut file, &entries, &options).unwrap();
+    file.flush().unwrap();
+    append_signature(&mut file, data_len).unwrap();
+
+    let mut reader = ClfReader::open(file.path()).unwrap();
+    let ok = reader
+        .verify_with_policy(VerificationPolicy::IntegrityOnly)
+        .unwrap();
+    assert!(ok);
+}
+
+#[test]
+fn verify_with_policy_require_authenticity_is_not_supported_yet() {
+    let entries: Vec<(u32, Vec<u8>)> = vec![(10, b"relu_kernel".to_vec())];
+    let options = PackOptions {
+        vendor: String::new(),
+        target: String::new(),
+        blob_alignment: 0,
+        kind: ClfKind::Compute,
+        version: 1,
+        sign: true,
+    };
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    let data_len = pack_clf(&mut file, &entries, &options).unwrap();
+    file.flush().unwrap();
+    append_signature(&mut file, data_len).unwrap();
+
+    let mut reader = ClfReader::open(file.path()).unwrap();
+    let err = reader
+        .verify_with_policy(VerificationPolicy::RequireAuthenticity)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("requires authenticity"),
+        "unexpected error: {err}"
+    );
 }

@@ -34,12 +34,17 @@ flowchart LR
 | Module / binary | Role |
 |-----------------|------|
 | `format` | `ClfHeader`, `ClfKind`, `ManifestEntry`, magic and version constants |
-| `reader` | Open file or bytes, `get_blob`, `blobs_iter`, optional `verify_signature` |
+| `reader` | Open file or bytes, `get_blob`, `blobs_iter`, `verify_signature`, policy-based `verify_with_policy` |
 | `packer` | `pack_clf`, `append_signature`, `parse_op_blob_arg` |
 | `manifest_file` | TOML pack manifest for `--from` |
 | `sidecar` | JSON sidecar types and writer |
 | `op_registry` | `OpType` ↔ op_id mapping |
 | `clf` / `coelanox-packer` | Same binary; pack, `--inspect`, `--verify`, `--dry-run`, `--write-sidecar` |
+
+## Verification semantics
+
+- **Current format guarantee:** SIG0 + SHA-256 integrity verification is supported today.
+- **Policy scaffold:** APIs and CLI expose a `require-authenticity` mode that intentionally fails closed until authenticated signatures are added in a future format revision.
 
 ## Versioning
 

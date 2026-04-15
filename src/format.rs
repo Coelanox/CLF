@@ -37,13 +37,14 @@ impl ClfKind {
         Self::Compute
     }
 
-    /// Parse from byte; invalid values default to Compute for robustness.
-    pub fn from_byte(b: u8) -> Self {
+    /// Parse from on-disk kind byte (v2+). Returns `None` for unknown values.
+    pub fn try_from_byte(b: u8) -> Option<Self> {
         match b {
-            1 => Self::MemoryMovement,
-            2 => Self::MemoryProtection,
-            3 => Self::Executor,
-            _ => Self::Compute,
+            0 => Some(Self::Compute),
+            1 => Some(Self::MemoryMovement),
+            2 => Some(Self::MemoryProtection),
+            3 => Some(Self::Executor),
+            _ => None,
         }
     }
 

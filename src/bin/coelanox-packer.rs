@@ -1,7 +1,8 @@
 // CLF packer CLI: build .clf archives, inspect them, or verify SIG0 + SHA-256.
 // Installed as `clf` or `coelanox-packer` (same behavior; see src/bin/clf.rs).
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -11,8 +12,23 @@ use sha2::{Digest, Sha256};
 
 use clf::{
     append_signature, load_pack_manifest, pack_clf, parse_op_blob_arg, sidecar, ClfReader,
-    PackManifestBlob, PackManifestResolved, PackOptions, CLF_VERSION,
+    PackManifestBlob, PackManifestResolved, PackOptions, VerificationPolicy, CLF_VERSION,
 };
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum VerifyPolicyArg {
+    IntegrityOnly,
+    RequireAuthenticity,
+}
+
+impl From<VerifyPolicyArg> for VerificationPolicy {
+    fn from(value: VerifyPolicyArg) -> Self {
+        match value {
+            VerifyPolicyArg::IntegrityOnly => VerificationPolicy::IntegrityOnly,
+            VerifyPolicyArg::RequireAuthenticity => VerificationPolicy::RequireAuthenticity,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -27,7 +43,8 @@ use clf::{
                     clf -o out.clfc --align 16 1:a.bin 50:b.bin\n\
                     clf --from pack.toml -o out.clfc --dry-run\n\
                     clf -i out.clfc --json\n\
-                    clf --verify out.clfc\n"
+                    clf --verify out.clfc\n\
+                    clf --verify out.clfc --verify-policy integrity-only\n"
 )]
 struct Cli {
     /// Print header and manifest (human-readable); use --json for machine output
@@ -37,6 +54,11 @@ struct Cli {
     /// Verify SIG0 + SHA-256 and exit 0 (ok) or 1 (missing/invalid); for CI
     #[arg(long, value_name = "FILE", conflicts_with_all = ["inspect", "output", "from_manifest", "entries"])]
     verify: Option<PathBuf>,
+
+    /// Verification policy for `--verify` or `--inspect --verify-signature`.
+    /// `require-authenticity` is reserved for future authenticated signatures.
+    #[arg(long, value_enum)]
+    verify_policy: Option<VerifyPolicyArg>,
 
     /// With --inspect: verify hash before printing
     #[arg(long, requires = "inspect")]
@@ -95,11 +117,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     if let Some(path) = &cli.verify {
-        return verify_file(path);
+        let policy = cli
+            .verify_policy
+            .clone()
+            .map(Into::into)
+            .unwrap_or(VerificationPolicy::IntegrityOnly);
+        return verify_file(path, policy);
     }
 
     if let Some(path) = &cli.inspect {
-        return inspect_file(path, cli.verify_signature, cli.json);
+        if cli.verify_policy.is_some() && !cli.verify_signature {
+            return Err(
+                "--verify-policy requires --verify, or --inspect with --verify-signature".into(),
+            );
+        }
+        let policy = cli
+            .verify_policy
+            .clone()
+            .map(Into::into)
+            .unwrap_or(VerificationPolicy::IntegrityOnly);
+        return inspect_file(
+            path,
+            cli.verify_signature,
+            cli.json,
+            policy,
+        );
+    }
+
+    if cli.verify_policy.is_some() {
+        return Err("--verify-policy requires --verify, or --inspect with --verify-signature".into());
     }
 
     // Pack
@@ -185,11 +231,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sidecar_blobs = Vec::new();
     if cli.write_sidecar {
+        let blob_by_id: HashMap<u32, &[u8]> = blobs
+            .iter()
+            .map(|(id, data)| (*id, data.as_slice()))
+            .collect();
         for bmeta in &resolved.blobs {
-            let data = blobs
-                .iter()
-                .find(|(id, _)| *id == bmeta.op_id)
-                .map(|(_, d)| d.as_slice())
+            let data = blob_by_id
+                .get(&bmeta.op_id)
+                .copied()
                 .ok_or("internal: missing blob for sidecar")?;
             sidecar_blobs.push(sidecar::SidecarBlob {
                 op_id: bmeta.op_id,
@@ -201,7 +250,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut out = File::create(&output_path)?;
+    let mut out = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&output_path)?;
     let data_len = pack_clf(&mut out, &blobs, &options)?;
     if options.sign {
         out.sync_all()?;
@@ -238,12 +292,12 @@ fn sha256_hex(data: &[u8]) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn verify_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn verify_file(path: &Path, policy: VerificationPolicy) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = ClfReader::open(path)?;
     if !reader.signature_block_present() {
         return Err("verify: no SIG0 signature block".into());
     }
-    match reader.verify_signature() {
+    match reader.verify_with_policy(policy) {
         Ok(true) => {
             println!("verify: OK ({})", path.display());
             Ok(())
@@ -253,11 +307,16 @@ fn verify_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn inspect_file(path: &Path, verify: bool, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn inspect_file(
+    path: &Path,
+    verify: bool,
+    json: bool,
+    policy: VerificationPolicy,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = ClfReader::open(path)?;
 
     if verify {
-        match reader.verify_signature() {
+        match reader.verify_with_policy(policy) {
             Ok(true) => {}
             Ok(false) => return Err("SIG0 missing or unreadable".into()),
             Err(e) => return Err(format!("signature verification failed: {e}").into()),

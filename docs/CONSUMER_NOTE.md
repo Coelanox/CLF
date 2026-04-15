@@ -21,7 +21,10 @@ Discovery and code-section building below apply to **CLFC** (and legacy `.clf`).
 ## Building the code section
 
 1. Open the CLF: `ClfReader::open(path)`.
-2. **(Optional)** Verify before use: `reader.verify_signature()`. If the platform requires a valid signature, refuse to use the file when verification fails.
+2. **(Optional)** Verify before use:
+   - `reader.verify_signature()` or `reader.verify_with_policy(IntegrityOnly)` for current integrity checks.
+   - `reader.verify_with_policy(RequireAuthenticity)` can be wired now as a fail-closed policy placeholder; it is intentionally unsupported until authenticated signatures are added.
+   If the platform requires verification, refuse to use the file when verification fails.
 3. Walk the optimized IR’s nodes in **execution order**. For each node:
    - `op_id = op_type_to_clf_id(node.op_type)` (canonical registry).
    - `blob = reader.get_blob(op_id)`.

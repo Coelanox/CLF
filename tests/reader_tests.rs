@@ -248,3 +248,72 @@ fn reader_blobs_iter_matches_get_blob() {
     assert_eq!(from_iter[1].0, 2);
     assert_eq!(from_iter[1].1, b"bb");
 }
+
+/// v2 file with unknown kind byte must be rejected.
+#[test]
+fn reader_rejects_invalid_kind_byte() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&clf::CLF_MAGIC);
+    bytes.push(2); // version
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // vendor len
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // target len
+    bytes.push(0); // alignment
+    bytes.push(0xFF); // invalid kind
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // num_entries
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let err = ClfReader::open(file.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("invalid kind byte"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Oversized vendor length must not trigger large allocations.
+#[test]
+fn reader_rejects_oversized_vendor_length() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&clf::CLF_MAGIC);
+    bytes.push(2); // version
+    bytes.extend_from_slice(&((70 * 1024) as u32).to_le_bytes()); // vendor len > cap
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let err = ClfReader::open(file.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("vendor too large"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Manifest count larger than available bytes must be rejected early.
+#[test]
+fn reader_rejects_manifest_count_overflow() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&clf::CLF_MAGIC);
+    bytes.push(2); // version
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // vendor len
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // target len
+    bytes.push(0); // align
+    bytes.push(0); // compute kind
+    bytes.extend_from_slice(&2u32.to_le_bytes()); // num_entries says 2
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // only one partial entry follows
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.flush().unwrap();
+
+    let err = ClfReader::open(file.path()).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("manifest entry count exceeds available file data"),
+        "unexpected error: {err}"
+    );
+}

@@ -111,3 +111,64 @@ fn coelanox_packer_verify_unsigned_fails() {
         .expect("verify");
     assert!(!st.success(), "unsigned clf should fail verify");
 }
+
+#[test]
+fn coelanox_packer_verify_require_authenticity_fails_until_supported() {
+    let bin = env!("CARGO_BIN_EXE_coelanox-packer");
+    let mut tmp = NamedTempFile::new().expect("temp");
+    tmp.write_all(&[0xc3]).expect("write");
+    tmp.flush().expect("flush");
+    let blob_path = tmp.path().to_owned();
+    let out = NamedTempFile::new().expect("out");
+    let clf_path = out.path().to_owned();
+    let entry = format!("0:{}", blob_path.display());
+    assert!(Command::new(bin)
+        .arg("-o")
+        .arg(&clf_path)
+        .arg("--sign")
+        .arg(&entry)
+        .status()
+        .expect("pack")
+        .success());
+
+    let out = Command::new(bin)
+        .args([
+            "--verify",
+            clf_path.to_str().expect("utf8"),
+            "--verify-policy",
+            "require-authenticity",
+        ])
+        .output()
+        .expect("verify");
+    assert!(!out.status.success(), "auth policy should fail until supported");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("requires authenticity"),
+        "expected readiness error, got: {stderr}"
+    );
+}
+
+#[test]
+fn coelanox_packer_verify_policy_requires_verification_mode() {
+    let bin = env!("CARGO_BIN_EXE_coelanox-packer");
+    let out = Command::new(bin)
+        .args(["--verify-policy", "integrity-only", "--help"])
+        .output()
+        .expect("spawn");
+    assert!(
+        out.status.success(),
+        "help should still work with policy flag: {:?}",
+        out
+    );
+
+    let run = Command::new(bin)
+        .args(["--verify-policy", "integrity-only"])
+        .output()
+        .expect("run");
+    assert!(!run.status.success(), "policy without mode should fail");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("--verify-policy requires --verify"),
+        "unexpected stderr: {stderr}"
+    );
+}

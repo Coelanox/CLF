@@ -17,6 +17,8 @@ use crate::format::{
     SIG_MAGIC,
 };
 
+const MAX_HEADER_TEXT_LEN: usize = 64 * 1024;
+
 /// Policy when an op_id required by the model is not present in the CLF.
 /// The packager can choose: fail (strict), skip (partial code), or eventually fall back to another backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +27,16 @@ pub enum MissingOpIdPolicy {
     Fail,
     /// If an op_id is missing, skip it (append nothing). Use for partial code or stubs.
     Skip,
+}
+
+/// Verification policy scaffold for future authenticated-signature support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationPolicy {
+    /// Current CLF behavior: verify optional SIG0 + SHA-256 integrity tail.
+    IntegrityOnly,
+    /// Forward-looking policy: require cryptographic signer authenticity.
+    /// Not supported by the current on-disk format.
+    RequireAuthenticity,
 }
 
 /// Errors produced by the CLF reader.
@@ -36,14 +48,49 @@ pub enum ClfError {
     InvalidMagic,
     #[error("unsupported version: {0} (supported: {1})")]
     UnsupportedVersion(u8, u8),
-    #[error("invalid vendor or target: UTF-8 error")]
+    #[error("invalid vendor: UTF-8 error")]
     InvalidVendorUtf8,
+    #[error("invalid target: UTF-8 error")]
+    InvalidTargetUtf8,
+    #[error("invalid kind byte in v2+ header: {0}")]
+    InvalidKindByte(u8),
+    #[error("verification policy requires authenticity, but current CLF format only supports integrity")]
+    AuthenticityVerificationUnsupported,
     #[error("signature missing or invalid")]
     SignatureInvalid,
     #[error("missing op_id {0} in CLF (policy: Fail)")]
     MissingOpId(u32),
     #[error("CLF kind mismatch: expected {expected:?}, got {actual:?}")]
     KindMismatch { expected: ClfKind, actual: ClfKind },
+}
+
+fn read_len_prefixed_utf8<R: Read>(
+    reader: &mut R,
+    field_name: &'static str,
+) -> Result<String, ClfError> {
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+    if len > MAX_HEADER_TEXT_LEN {
+        return Err(ClfError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{field_name} too large: {len} bytes"),
+        )));
+    }
+
+    let mut bytes = vec![0u8; len];
+    if len > 0 {
+        reader.read_exact(&mut bytes)?;
+    }
+
+    String::from_utf8(bytes).map_err(|_| match field_name {
+        "vendor" => ClfError::InvalidVendorUtf8,
+        "target" => ClfError::InvalidTargetUtf8,
+        _ => ClfError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid UTF-8 field",
+        )),
+    })
 }
 
 /// CLF reader: parses header and manifest, provides get_blob(op_id).
@@ -96,25 +143,10 @@ impl ClfReader {
             return Err(ClfError::UnsupportedVersion(version, CLF_VERSION));
         }
 
-        let mut vendor_len_buf = [0u8; 4];
-        reader.read_exact(&mut vendor_len_buf)?;
-        let vendor_len = u32::from_le_bytes(vendor_len_buf) as usize;
-
-        let mut vendor_bytes = vec![0u8; vendor_len];
-        if vendor_len > 0 {
-            reader.read_exact(&mut vendor_bytes)?;
-        }
-        let vendor = String::from_utf8(vendor_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
+        let vendor = read_len_prefixed_utf8(&mut reader, "vendor")?;
 
         // Target length (4 B LE), target (M bytes), blob alignment (1 B).
-        let mut target_len_buf = [0u8; 4];
-        reader.read_exact(&mut target_len_buf)?;
-        let target_len = u32::from_le_bytes(target_len_buf) as usize;
-        let mut target_bytes = vec![0u8; target_len];
-        if target_len > 0 {
-            reader.read_exact(&mut target_bytes)?;
-        }
-        let target = String::from_utf8(target_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
+        let target = read_len_prefixed_utf8(&mut reader, "target")?;
         let mut blob_align_byte = [0u8; 1];
         reader.read_exact(&mut blob_align_byte)?;
         let blob_alignment = blob_align_byte[0];
@@ -123,7 +155,7 @@ impl ClfReader {
         let kind = if version >= 2 {
             let mut kind_byte = [0u8; 1];
             reader.read_exact(&mut kind_byte)?;
-            ClfKind::from_byte(kind_byte[0])
+            ClfKind::try_from_byte(kind_byte[0]).ok_or(ClfError::InvalidKindByte(kind_byte[0]))?
         } else {
             ClfKind::default_for_v1()
         };
@@ -151,6 +183,16 @@ impl ClfReader {
         let mut num_entries_buf = [0u8; 4];
         reader.read_exact(&mut num_entries_buf)?;
         let num_entries = u32::from_le_bytes(num_entries_buf) as usize;
+        let manifest_start = reader.stream_position()?;
+        let file_len = reader.seek(SeekFrom::End(0))?;
+        let required_manifest_bytes = (num_entries as u64) * (ManifestEntry::ENTRY_SIZE as u64);
+        if required_manifest_bytes > file_len.saturating_sub(manifest_start) {
+            return Err(ClfError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "manifest entry count exceeds available file data",
+            )));
+        }
+        reader.seek(SeekFrom::Start(manifest_start))?;
 
         let mut manifest = HashMap::with_capacity(num_entries);
         for _ in 0..num_entries {
@@ -170,7 +212,6 @@ impl ClfReader {
         let blob_store_offset = reader.stream_position()?;
 
         // Compute blob store length: either from file size minus optional signature, or from max(offset+size).
-        let file_len = reader.seek(SeekFrom::End(0))?;
         let has_sig = file_len >= (SIG_BLOCK_LEN as u64) && {
             reader.seek(SeekFrom::End(-(SIG_BLOCK_LEN as i64)))?;
             let mut sig_magic = [0u8; 4];
@@ -284,6 +325,17 @@ impl ClfReader {
         Ok(true)
     }
 
+    /// Verify according to policy. This is intentionally forward-compatible so callers
+    /// can adopt policy-driven verification now without changing API shape later.
+    pub fn verify_with_policy(&mut self, policy: VerificationPolicy) -> Result<bool, ClfError> {
+        match policy {
+            VerificationPolicy::IntegrityOnly => self.verify_signature(),
+            VerificationPolicy::RequireAuthenticity => {
+                Err(ClfError::AuthenticityVerificationUnsupported)
+            }
+        }
+    }
+
     /// Whether verify_signature() was called and succeeded.
     #[must_use]
     pub fn signature_verified(&self) -> bool {
@@ -378,29 +430,15 @@ impl ClfReaderFromBytes {
         if version > CLF_VERSION {
             return Err(ClfError::UnsupportedVersion(version, CLF_VERSION));
         }
-        let mut vendor_len_buf = [0u8; 4];
-        cursor.read_exact(&mut vendor_len_buf)?;
-        let vendor_len = u32::from_le_bytes(vendor_len_buf) as usize;
-        let mut vendor_bytes = vec![0u8; vendor_len];
-        if vendor_len > 0 {
-            cursor.read_exact(&mut vendor_bytes)?;
-        }
-        let vendor = String::from_utf8(vendor_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
-        let mut target_len_buf = [0u8; 4];
-        cursor.read_exact(&mut target_len_buf)?;
-        let target_len = u32::from_le_bytes(target_len_buf) as usize;
-        let mut target_bytes = vec![0u8; target_len];
-        if target_len > 0 {
-            cursor.read_exact(&mut target_bytes)?;
-        }
-        let target = String::from_utf8(target_bytes).map_err(|_| ClfError::InvalidVendorUtf8)?;
+        let vendor = read_len_prefixed_utf8(&mut cursor, "vendor")?;
+        let target = read_len_prefixed_utf8(&mut cursor, "target")?;
         let mut blob_align_byte = [0u8; 1];
         cursor.read_exact(&mut blob_align_byte)?;
         let blob_alignment = blob_align_byte[0];
         let kind = if version >= 2 {
             let mut kind_byte = [0u8; 1];
             cursor.read_exact(&mut kind_byte)?;
-            ClfKind::from_byte(kind_byte[0])
+            ClfKind::try_from_byte(kind_byte[0]).ok_or(ClfError::InvalidKindByte(kind_byte[0]))?
         } else {
             ClfKind::default_for_v1()
         };
@@ -424,6 +462,14 @@ impl ClfReaderFromBytes {
         let mut num_entries_buf = [0u8; 4];
         cursor.read_exact(&mut num_entries_buf)?;
         let num_entries = u32::from_le_bytes(num_entries_buf) as usize;
+        let manifest_start = cursor.stream_position()?;
+        let required_manifest_bytes = (num_entries as u64) * (ManifestEntry::ENTRY_SIZE as u64);
+        if required_manifest_bytes > (data.len() as u64).saturating_sub(manifest_start) {
+            return Err(ClfError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "manifest entry count exceeds available CLF bytes",
+            )));
+        }
         let mut manifest = HashMap::with_capacity(num_entries);
         for _ in 0..num_entries {
             let mut entry_buf = [0u8; ManifestEntry::ENTRY_SIZE];
