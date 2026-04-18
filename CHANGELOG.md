@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **README presentation:** centered Coelanox logo (`assets/coelanox-logo.png`), crates.io / CI / license badges, structured overview and documentation index tables.
+
+- **Contributor onboarding:** [CONTRIBUTING.md](CONTRIBUTING.md) and `scripts/gh-bootstrap-repo.sh` for one-time GitHub description, topics, and roadmap issues (maintainers).
+
 - **`clf` binary**: same implementation as `coelanox-packer` (short name for `cargo install` / PATH). `cargo install clf` installs both `clf` and `coelanox-packer`.
 - `rust-version` (MSRV) in `Cargo.toml`.
 - Optional `serde` feature: `Serialize`/`Deserialize` for `ClfKind`, `ClfHeader`, `ManifestEntry` (when feature enabled).

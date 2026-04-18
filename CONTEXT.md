@@ -1,9 +1,11 @@
 # CONTEXT
 
-Last updated: 2026-04-15
+Last updated: 2026-04-18
 
 ## Current State
 
+- README presents the project with centered Coelanox logo (`assets/coelanox-logo.png`), badges, and structured overview for public visibility; technical content preserved.
+- Contributor-facing docs: `CONTRIBUTING.md` describes PR workflow and CI parity; `scripts/gh-bootstrap-repo.sh` sets GitHub description/topics and opens roadmap issues (requires `gh` auth on maintainer machine).
 - CLF parsing is now strict for v2+ `kind` bytes (`0..=3` only).
 - Reader parsing now includes guardrails against oversized header text fields and impossible manifest counts.
 - CLI sidecar generation was optimized to avoid quadratic lookup behavior.
@@ -14,6 +16,13 @@ Last updated: 2026-04-15
 - GitHub release automation now publishes installer-compatible assets and checksums.
 
 ## Changes Applied
+
+- `README.md`, `assets/coelanox-logo.png` (renamed from designer export `Group 1 (1).png`)
+  - Professional landing layout: logo, crates/CI/license badges, tables for format family and docs index.
+
+- `CONTRIBUTING.md`, `scripts/gh-bootstrap-repo.sh`
+  - Contribution guidelines aligned with CI (`fmt`, `clippy`, `test`, `cargo deny`).
+  - Maintainer script to apply GitHub repo description, topics (`ai-inference`, `auditable-ai`, `rust`, `onnx`, `compliance`), and labeled roadmap issues (run locally with `gh`).
 
 - `src/format.rs`
   - Replaced permissive kind parsing with `ClfKind::try_from_byte(u8) -> Option<ClfKind>`.

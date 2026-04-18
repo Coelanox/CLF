@@ -1,8 +1,34 @@
-# CLF (Coelanox Library File)
+<div align="center">
+  <img src="assets/coelanox-logo.png" alt="Coelanox" width="440">
+</div>
 
-CLF is the standard binary format for shipping pre-compiled hardware kernels in the Coelanox ecosystem. It is a static kernel archive: one file containing optimized machine-code blobs keyed by numeric op_id. The packager looks up blobs by op_id and copies them into the container at package time; there is no runtime code generation or kernel loading.
+# Coelanox Library File (CLF)
 
-## Quickstart (60 seconds)
+[![Crates.io](https://img.shields.io/crates/v/clf)](https://crates.io/crates/clf)
+[![CI](https://github.com/Coelanox/CLF/actions/workflows/ci.yml/badge.svg)](https://github.com/Coelanox/CLF/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**CLF is the canonical binary format for packaging pre-compiled hardware kernels in the Coelanox stack.** A single file holds machine-code blobs keyed by numeric `op_id`; runtimes and packagers consume the same layout, with optional SIG0 + SHA-256 integrity verification and a forward path toward stronger authenticity policies.
+
+This repository ships the **reference Rust implementation** (library + `clf` CLI), the **on-disk specification**, and **producer/consumer documentation** intended for security review and compliance-oriented workflows.
+
+## Overview
+
+- **Static archive:** one container, many blobs—no runtime code generation or kernel loading from CLF itself.
+- **Deterministic consumption:** the packager resolves `op_id` → blob at package time; the runtime executes the resulting code regions.
+- **Integrity today:** optional `verify_signature()` / `verify_with_policy(IntegrityOnly)` for the SIG0 + SHA-256 trailer.
+- **Authenticity roadmap:** `RequireAuthenticity` and `--verify-policy require-authenticity` are intentionally fail-closed until authenticated signatures are defined in the format.
+
+## What this repository provides
+
+| Area | Contents |
+|------|----------|
+| **Reader (Rust)** | `ClfReader::open`, `get_blob(op_id)`, `build_code_section` with missing-op policy, optional `verify_with_policy` |
+| **Packer (Rust / CLI)** | `clf` / `coelanox-packer`: `--from` TOML manifests, `--inspect --json`, `--verify`, `--write-sidecar`, `--dry-run` |
+| **Registry** | Canonical `op_id` mapping and docs in [docs/op_ids.md](docs/op_ids.md) |
+| **Specification** | [SPEC.md](SPEC.md) — binary layout, `kind`, alignment, signatures, versioning |
+
+## Quickstart
 
 ```bash
 # 1) Build a CLF from op_id:path pairs
@@ -15,47 +41,47 @@ clf -i out.clfc
 clf --verify out.clfc --verify-policy integrity-only
 ```
 
-`require-authenticity` exists as a forward-compatibility policy and intentionally fails today until authenticated signatures are added to the format.
+`require-authenticity` exists as a forward-compatibility policy and fails closed until the format supports authenticated signatures.
 
-**CLF family (kind = what the runtime uses; extension = for discovery):**
+## CLF format family
 
-- **CLFC** (Compute): op_id → kernel blobs. Extension `.clfc`.
-- **CLFMM** (Memory movement): memory copy/move blobs. Extension `.clfmm`.
-- **CLFMP** (Memory protection): region protection blobs. Extension `.clfmp`.
-- **CLFE** (Executor): plan runner / dispatcher; see [docs/clfe.md](docs/clfe.md). Extension `.clfe`.
+`kind` selects runtime semantics; the file extension supports discovery:
 
-**Three uses for the three HALs (compute / memory / protection):**
+| Kind | Role | Typical extension |
+|------|------|-------------------|
+| **CLFC** | Compute kernels (`op_id` → blob) | `.clfc` |
+| **CLFMM** | Memory movement | `.clfmm` |
+| **CLFMP** | Memory protection | `.clfmp` |
+| **CLFE** | Executor / dispatcher plans ([docs/clfe.md](docs/clfe.md)) | `.clfe` |
 
-- **Codegen / backend:** CLF supplies the machine code that would otherwise come from a BackendTranslator. When the backend is `BackendKind::Clf`, the packager opens the `.clf`, maps each IR node’s OpType to op_id, and appends the corresponding blob to the code section.
-- **Memory HAL:** The code section (built from CLF blobs) is what the runtime allocates or backs via the Memory HAL (e.g. executable region). CLF-derived bytes are the content of those regions.
-- **Protection HAL:** The region(s) holding the code section are the ones the Protection HAL configures (e.g. code RX, weights RO). CLF-derived content defines which regions get which protection.
+## Role in the Coelanox stack
 
-**Spec and docs:**
-
-- [SPEC.md](SPEC.md) — full format specification (binary layout, target, alignment, **kind** including Executor, signature, version policy). Section 1 and 3.1.1 describe the CLF family (CLFC, CLFMM, CLFMP, **CLFE**).
-- [docs/op_ids.md](docs/op_ids.md) — canonical op_id registry (single source of truth; custom range 256–65535; stability).
-- [docs/clfe.md](docs/clfe.md) — **CLFE (Executor):** execution plan format and dispatch contract. Referenced from the spec.
-- [docs/PRODUCER_GUIDE.md](docs/PRODUCER_GUIDE.md) — how to produce a valid .clf (packer usage, op_ids, **--kind**, optional signing).
-- [docs/CONSUMER_NOTE.md](docs/CONSUMER_NOTE.md) — how the packager and runtime use CLF (CLF family, discovery, target match, op_id lookup, missing-op policy, HALs).
-
-**This repo provides:**
-
-- **Reader** (Rust): `ClfReader::open(path)`, `get_blob(op_id)`, `build_code_section(op_ids, MissingOpIdPolicy)` (Fail or Skip when op_id missing), optional `verify_signature()` or policy-based `verify_with_policy()` before use. Header includes `target` and `blob_alignment` for packager matching and layout.
-- **Packer** (Rust): **`clf`** CLI (same program as `coelanox-packer`; pack with **`--from`** TOML manifest, **`--dry-run`**, **`--verify`**, **`--inspect --json`**, **`--write-sidecar`**) and `pack_clf` / `append_signature` / `parse_op_blob_arg` / `load_pack_manifest` / sidecar helpers. Open source so producers can audit it.
-- **Op ID registry**: `op_type_to_clf_id(OpType)`, `clf_id_to_op_type(op_id)` and canonical op_id list in code and docs/op_ids.md (custom range 256–u32::MAX).
+- **Codegen / backend:** when the backend is CLF-backed, the packager maps IR `OpType` → `op_id` and emits the corresponding blob into the code section.
+- **Memory HAL:** CLF-derived bytes back executable (or other) regions allocated through the Memory HAL.
+- **Protection HAL:** the Protection HAL applies attributes (for example code RX, read-only weights) to the regions that contain those bytes.
 
 ## Verification model
 
-- **Integrity today:** `verify_signature()` and `verify_with_policy(IntegrityOnly)` validate the optional SIG0 + SHA-256 tail.
-- **Authenticity later:** `verify_with_policy(RequireAuthenticity)` and CLI `--verify-policy require-authenticity` are intentionally fail-closed placeholders until authenticated signatures are implemented.
+- **Integrity:** `verify_signature()` and `verify_with_policy(IntegrityOnly)` validate the optional SIG0 + SHA-256 tail.
+- **Authenticity (planned):** `verify_with_policy(RequireAuthenticity)` remains explicit and unsupported until authenticated trailer design lands.
 
-See [docs/SIGNING.md](docs/SIGNING.md) for CLI examples and rollout semantics.
+Details: [docs/SIGNING.md](docs/SIGNING.md).
+
+## Documentation index
+
+| Document | Purpose |
+|----------|---------|
+| [SPEC.md](SPEC.md) | Full binary specification (layout, `kind`, CLFE, signatures) |
+| [docs/PRODUCER_GUIDE.md](docs/PRODUCER_GUIDE.md) | Producing valid archives, `--kind`, signing |
+| [docs/CONSUMER_NOTE.md](docs/CONSUMER_NOTE.md) | Consumer behavior: discovery, target match, missing-op policy, HALs |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Internal structure and verification APIs |
+| [docs/SIGNING.md](docs/SIGNING.md) | Signing and policy semantics |
+| [docs/RELEASE.md](docs/RELEASE.md) | Release process and published assets |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ## Installation
 
-### Vendors (recommended)
-
-Use release binaries with the provided install scripts:
+### Vendors (release binaries)
 
 ```bash
 bash scripts/install.sh
@@ -65,18 +91,9 @@ bash scripts/install.sh
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-Script defaults:
-- repository: `Coelanox/CLF`
-- version: `latest`
-- install path:
-  - Linux: `~/.local/bin/clf`
-  - Windows: `%USERPROFILE%\.local\bin\clf.exe`
+Defaults: repository `Coelanox/CLF`, version `latest`, install paths `~/.local/bin/clf` (Linux) or `%USERPROFILE%\.local\bin\clf.exe` (Windows). Override with `CLF_REPO`, `CLF_VERSION`, `CLF_INSTALL_DIR`.
 
-Overrides are supported via environment variables: `CLF_REPO`, `CLF_VERSION`, `CLF_INSTALL_DIR`.
-
-Release assets expected by scripts:
-- Linux: `clf-x86_64-unknown-linux-gnu.tar.gz` (and optionally `clf-aarch64-unknown-linux-gnu.tar.gz`)
-- Windows: `clf-x86_64-pc-windows-msvc.zip` (and optionally `clf-aarch64-pc-windows-msvc.zip`)
+Expected assets include `clf-x86_64-unknown-linux-gnu.tar.gz`, `clf-x86_64-pc-windows-msvc.zip`, and `SHA256SUMS`.
 
 ### Developers
 
@@ -84,6 +101,8 @@ Release assets expected by scripts:
 cargo install clf
 ```
 
-Build: `cargo build` (MSRV in `Cargo.toml` `rust-version`). Tests: `cargo test`. Pack: `cargo run --bin clf -- -o out.clf 1:blob1.bin 50:blob50.bin` (or `--bin coelanox-packer`). After `cargo install clf`, use the `clf` command on your `PATH`. Inspect: `clf -i out.clf`. Verify SIG0: `clf --verify out.clf` (or explicitly `--verify-policy integrity-only`). Optional TOML manifest and JSON sidecar: [docs/PRODUCER_GUIDE.md](docs/PRODUCER_GUIDE.md). Fuzzing: `cd fuzz && cargo fuzz run clf_open` (requires [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)). Changelog: [CHANGELOG.md](CHANGELOG.md). Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+From a clone: `cargo build` (MSRV in `Cargo.toml`), `cargo test --all-features`, `cargo clippy` as in CI. Pack example: `cargo run --bin clf -- -o out.clf 1:blob1.bin 50:blob50.bin`. Fuzzing: `cd fuzz && cargo fuzz run clf_open` ([cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)).
 
-Release process and asset contract: [docs/RELEASE.md](docs/RELEASE.md).
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, CI parity, and maintainer GitHub setup.
