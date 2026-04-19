@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Release workflow:** `workflow_dispatch` builds now check out `inputs.tag` so published binaries match the requested tag (previously built the workflow’s default ref).
 - **`scripts/install.ps1`:** avoid Windows PowerShell 5.1 null/misparenthesis on `RuntimeInformation::OSArchitecture.ToString()`; resolve target triple via explicit property read and `PROCESSOR_ARCHITECTURE` / `PROCESSOR_ARCHITEW6432` fallback (WOW64).
 
 ## [0.1.2] - 2026-04-19
