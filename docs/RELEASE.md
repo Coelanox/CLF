@@ -27,15 +27,12 @@ The release workflow builds and uploads:
 - `clf-x86_64-pc-windows-msvc.zip`
 - `SHA256SUMS`
 
-Each archive contains the `clf` CLI binary only:
+Each archive contains the `clf` CLI binary plus the matching installer at the archive root:
 
-- Linux archive: `clf`
-- Windows archive: `clf.exe`
+- Linux archive: `clf`, `install.sh` (copy of `scripts/install.sh` from the tagged tree)
+- Windows archive: `clf.exe`, `install.ps1` (copy of `scripts/install.ps1`)
 
-These names are consumed by:
-
-- `scripts/install.sh`
-- `scripts/install.ps1`
+The same scripts live under `scripts/` in the repository; release archives bundle them so an unzip/tar extract is self-contained. The installers still download the matching archive from GitHub by default (override with `CLF_INSTALL_DIR` if you only want to place the binary you already extracted).
 
 ## Verification
 

@@ -68,8 +68,8 @@ The tool reads each file as a raw blob and writes header + manifest + blob store
 
 For non-Rust environments, use release binaries with installer scripts:
 
-- Linux: `bash scripts/install.sh`
-- Windows: `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1`
+- From a git checkout: Linux `bash scripts/install.sh`, Windows `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1`.
+- From a **GitHub release** archive: the same scripts are included at the root as `install.sh` / `install.ps1` next to the binary.
 
 Defaults:
 - repo: `Coelanox/CLF`
@@ -80,7 +80,7 @@ Defaults:
 
 You can override repo/version/install-dir with `CLF_REPO`, `CLF_VERSION`, `CLF_INSTALL_DIR`.
 
-Release assets expected by the scripts:
+Release assets (each archive includes the binary plus `install.sh` or `install.ps1` at the root):
 - `clf-x86_64-unknown-linux-gnu.tar.gz` (optional arm64 variant: `clf-aarch64-unknown-linux-gnu.tar.gz`)
 - `clf-x86_64-pc-windows-msvc.zip` (optional arm64 variant: `clf-aarch64-pc-windows-msvc.zip`)
 
