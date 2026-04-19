@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-19
+
+### Changed
+
+- **`scripts/install.ps1`:** after a successful install, append the install directory to the **per-user** `Path` when it is not already present (open a new terminal to pick it up). Set `CLF_NO_PATH=1` to skip.
+- **`scripts/install.sh`:** optional `CLF_ADD_TO_PATH=1` appends a guarded `PATH` export to `~/.profile` when the directory is not already mentioned there; default remains print-only instructions.
+
+## [0.1.0]
+
 ### Added
 
 - **README presentation:** centered Coelanox logo (`assets/coelanox-logo.png`), crates.io / CI / license badges, structured overview and documentation index tables.

@@ -12,13 +12,31 @@ Environment overrides:
   CLF_REPO=owner/repo
   CLF_VERSION=latest|vX.Y.Z
   CLF_INSTALL_DIR=C:\path\to\bin
+  CLF_NO_PATH=1   Skip adding install dir to the user PATH (default: append if missing)
 
 Usage:
   powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
-  $env:CLF_VERSION='v0.1.0'; .\scripts\install.ps1
+  $env:CLF_VERSION='v0.1.1'; .\scripts\install.ps1
 #>
 
 $ErrorActionPreference = "Stop"
+
+function Add-UserPathEntry {
+    param([string]$Dir)
+    $normalized = [System.IO.Path]::GetFullPath($Dir.TrimEnd('\', '/'))
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ([string]::IsNullOrEmpty($userPath)) {
+        [Environment]::SetEnvironmentVariable("Path", $normalized, "User")
+        return $true
+    }
+    $parts = $userPath -split ';' | Where-Object { $_ -ne "" } | ForEach-Object { [System.IO.Path]::GetFullPath($_.TrimEnd('\', '/')) }
+    foreach ($p in $parts) {
+        if ($p -eq $normalized) { return $false }
+    }
+    $newPath = if ($userPath.EndsWith(';')) { "${userPath}${normalized}" } else { "${userPath};${normalized}" }
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    return $true
+}
 
 $Repo = if ($env:CLF_REPO) { $env:CLF_REPO } else { "Coelanox/CLF" }
 $Version = if ($env:CLF_VERSION) { $env:CLF_VERSION } else { "latest" }
@@ -57,11 +75,16 @@ try {
     Copy-Item -Path $binaryPath -Destination $dest -Force
     Write-Host "Installed clf to $dest"
 
-    $pathEntries = ($env:Path -split ';') | Where-Object { $_ -ne "" }
-    if (-not ($pathEntries -contains $InstallDir)) {
-        Write-Host "Note: $InstallDir is not in PATH."
-        Write-Host "Add it for this user with:"
-        Write-Host "  [Environment]::SetEnvironmentVariable('Path', `$env:Path + ';$InstallDir', 'User')"
+    $skipPath = $env:CLF_NO_PATH -eq "1"
+    if ($skipPath) {
+        Write-Host "Skipped PATH update (CLF_NO_PATH=1)."
+    } else {
+        $added = Add-UserPathEntry -Dir $InstallDir
+        if ($added) {
+            Write-Host "Added $InstallDir to your user PATH. Open a new terminal for it to take effect."
+        } else {
+            Write-Host "$InstallDir is already on your user PATH."
+        }
     }
 }
 finally {
