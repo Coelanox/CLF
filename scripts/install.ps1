@@ -42,12 +42,33 @@ $Repo = if ($env:CLF_REPO) { $env:CLF_REPO } else { "Coelanox/CLF" }
 $Version = if ($env:CLF_VERSION) { $env:CLF_VERSION } else { "latest" }
 $InstallDir = if ($env:CLF_INSTALL_DIR) { $env:CLF_INSTALL_DIR } else { Join-Path $HOME ".local\bin" }
 
-$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-switch ($arch) {
-    "x64" { $target = "x86_64-pc-windows-msvc" }
-    "arm64" { $target = "aarch64-pc-windows-msvc" }
-    default { throw "Unsupported architecture: $arch" }
+# Parentheses required: without them, Windows PowerShell 5.1 can misparenthesize
+# `[Type]::OSArchitecture.ToString()` and you get "method on null".
+function Get-WindowsClfTargetTriple {
+    $osArch = $null
+    try {
+        $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    } catch {
+        $osArch = $null
+    }
+    if ($null -ne $osArch) {
+        switch ($osArch.ToString().ToLowerInvariant()) {
+            "x64" { return "x86_64-pc-windows-msvc" }
+            "arm64" { return "aarch64-pc-windows-msvc" }
+            default { }
+        }
+    }
+    # Fallback for hosts where RuntimeInformation is missing or unhelpful (older .NET / PS).
+    # WOW64: 32-bit PowerShell on x64 Windows often has PROCESSOR_ARCHITECTURE=x86 and
+    # PROCESSOR_ARCHITEW6432=AMD64.
+    $pa = $env:PROCESSOR_ARCHITECTURE
+    $pa6432 = $env:PROCESSOR_ARCHITEW6432
+    if ($pa -eq "AMD64" -or $pa6432 -eq "AMD64") { return "x86_64-pc-windows-msvc" }
+    if ($pa -eq "ARM64") { return "aarch64-pc-windows-msvc" }
+    throw "Unsupported processor architecture: PROCESSOR_ARCHITECTURE=$pa PROCESSOR_ARCHITEW6432=$pa6432 RuntimeInformation.OSArchitecture=$osArch"
 }
+
+$target = Get-WindowsClfTargetTriple
 
 $asset = "clf-$target.zip"
 if ($Version -eq "latest") {
