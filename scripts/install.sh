@@ -15,7 +15,7 @@ set -euo pipefail
 #
 # Usage:
 #   bash scripts/install.sh
-#   CLF_VERSION=v0.1.1 bash scripts/install.sh
+#   CLF_VERSION=v0.1.2 bash scripts/install.sh
 
 CLF_REPO="${CLF_REPO:-Coelanox/CLF}"
 CLF_VERSION="${CLF_VERSION:-latest}"

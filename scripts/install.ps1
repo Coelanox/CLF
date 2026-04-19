@@ -16,7 +16,7 @@ Environment overrides:
 
 Usage:
   powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
-  $env:CLF_VERSION='v0.1.1'; .\scripts\install.ps1
+  $env:CLF_VERSION='v0.1.2'; .\scripts\install.ps1
 #>
 
 $ErrorActionPreference = "Stop"
