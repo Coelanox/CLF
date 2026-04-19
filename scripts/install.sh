@@ -32,11 +32,7 @@ require_cmd uname
 require_cmd mktemp
 require_cmd tar
 
-if command -v curl >/dev/null 2>&1; then
-    DOWNLOADER="curl -fsSL"
-elif command -v wget >/dev/null 2>&1; then
-    DOWNLOADER="wget -qO-"
-else
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     echo "error: missing downloader (curl or wget)" >&2
     exit 1
 fi

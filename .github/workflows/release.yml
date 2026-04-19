@@ -35,8 +35,12 @@ jobs:
             bin_name: clf.exe
 
     steps:
+      # Tag push: build exactly that tag. workflow_dispatch: must build inputs.tag,
+      # otherwise we would ship main@HEAD binaries attached to an older tag.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable

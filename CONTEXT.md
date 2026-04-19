@@ -1,6 +1,6 @@
 # CONTEXT
 
-Last updated: 2026-04-18
+Last updated: 2026-04-19
 
 ## Current State
 
@@ -85,6 +85,12 @@ Last updated: 2026-04-18
 - Main DoS vector from untrusted length-driven allocation in reader parsing has been reduced with explicit caps and structure-size validation.
 - Unknown on-disk `kind` bytes are treated as malformed input instead of silently coercing to compute.
 - Policy-driven verification API allows consumers to adopt "require authenticity" semantics now and fail closed until authenticated signatures are implemented.
+
+## Release review (2026-04-19)
+
+- **Fixed:** `release.yml` build job now checks out `inputs.tag` when using `workflow_dispatch`, so published binaries match the tag (previously built default-branch HEAD).
+- **Flagged (unchanged):** Linux install script maps `aarch64` to `clf-aarch64-unknown-linux-gnu.tar.gz`, but the release workflow only builds x86_64 assets until an arm64 matrix row exists — ARM Linux users get a failed download until then.
+- **Note:** `SHA256SUMS` step assumes at least one `.tar.gz` and one `.zip` artifact; true for the current matrix.
 
 ## Open Follow-ups
 
